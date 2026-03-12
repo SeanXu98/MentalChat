@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="4d8bf206-736a-4990-9d77-253c2e989ebf" name="FineTune">
+        <fileTransfer accessType="SFTP" host="connect.westd.seetacloud.com" port="24818" sshConfigId="e89c1f73-63b4-47a2-889f-d7859c71b20e" sshConfig="root@connect.westd.seetacloud.com:24818 password">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" keepAliveTimeout="0" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>

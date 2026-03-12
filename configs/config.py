@@ -8,7 +8,7 @@
 import os
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Any
 
 # 项目根目录
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -18,8 +18,8 @@ PROJECT_ROOT = Path(__file__).parent.parent
 class ModelConfig:
     """模型配置"""
     # 基座模型
-    base_model_name: str = "Qwen/Qwen2-7B-Instruct"
-    base_model_path: str = str(PROJECT_ROOT / "models" / "base" / "Qwen_Qwen2-7B-Instruct")
+    base_model_name: str = "Qwen/Qwen2.5-7B-Instruct"
+    base_model_path: str = str(PROJECT_ROOT / "models" / "base" / "Qwen_Qwen2.5-7B-Instruct")
 
     # 是否使用本地模型
     use_local_model: bool = True
@@ -101,10 +101,10 @@ class DataConfig:
     raw_data_path: str = str(PROJECT_ROOT / "data" / "raw" / "data.csv")
     processed_data_dir: str = str(PROJECT_ROOT / "data" / "processed")
 
-    # 训练数据
-    train_file: str = "train.json"
-    valid_file: str = "valid.json"
-    test_file: str = "test.json"
+    # 训练数据 (JSONL 格式，ChatML 风格)
+    train_file: str = "train.jsonl"
+    valid_file: str = "valid.jsonl"
+    test_file: str = "test.jsonl"
 
     # 数据划分比例
     train_ratio: float = 0.8
@@ -114,13 +114,41 @@ class DataConfig:
     # 数据处理
     max_input_length: int = 512
     max_output_length: int = 512
-    max_total_length: int = 1024
+    max_total_length: int = 2048
 
-    # 指令模板
-    instruction_template: str = (
-        "你是一名专业的心理咨询客服，请根据来访者的问题，给出专业、共情的回复。"
-        "回复需包含：1.情绪回应 2.问题分析 3.专业建议 4.引导跟进"
+    # 数据格式
+    data_format: str = "chatml"  # ChatML 格式
+
+    # 系统提示词 (System Prompt)
+    system_prompt: str = (
+        "你是一名专业的心理咨询客服，请根据来访者的问题，给出专业、共情的回复。\n\n"
+        "回复要求：\n"
+        "1. 首先表达对来访者情绪的理解和接纳\n"
+        "2. 分析来访者可能面临的问题\n"
+        "3. 提供具体、可行的建议\n"
+        "4. 以开放式问题或鼓励性话语引导来访者继续表达\n\n"
+        "注意：保持温和、专业的语气，避免过于绝对的建议，尊重来访者的感受。"
     )
+
+
+@dataclass
+class AugmentConfig:
+    """数据增强配置"""
+    # 是否启用增强
+    enabled: bool = False
+
+    # 增强比例 (0-1)
+    augment_ratio: float = 0.3
+
+    # 增强策略
+    strategies: List[str] = field(default_factory=lambda: ["paraphrase", "enhance"])
+
+    # Qwen API 配置
+    api_key: Optional[str] = None  # 从环境变量 DASHSCOPE_API_KEY 读取
+    api_model: str = "qwen-plus"  # qwen-turbo, qwen-plus, qwen-max
+
+    # 增强场景类型（用于场景扩展）
+    scenario_types: List[str] = field(default_factory=lambda: ["青少年", "职场", "家庭", "学业"])
 
 
 @dataclass
@@ -142,6 +170,7 @@ class Config:
     lora: LoRAConfig = field(default_factory=LoRAConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     data: DataConfig = field(default_factory=DataConfig)
+    augment: AugmentConfig = field(default_factory=AugmentConfig)
     inference: InferenceConfig = field(default_factory=InferenceConfig)
 
 
@@ -169,6 +198,7 @@ def print_config():
         "lora": asdict(config.lora),
         "training": asdict(config.training),
         "data": asdict(config.data),
+        "augment": asdict(config.augment),
         "inference": asdict(config.inference),
     }
 

@@ -212,7 +212,7 @@ def verify_qlora_config(model_path: str):
     print("✓ QLoRA 配置验证通过！")
     print("="*60)
     print("\n配置摘要:")
-    print(f"  - 基座模型: Qwen2-7B-Instruct")
+    print(f"  - 基座模型: Qwen2.5-7B-Instruct")
     print(f"  - 量化方案: 4-bit NF4")
     print(f"  - LoRA 秩: 16")
     print(f"  - 可训练参数比例: {trainable_ratio:.4f}%")
@@ -238,13 +238,13 @@ def main():
     parser.add_argument(
         "--model-path",
         type=str,
-        default=str(PROJECT_ROOT / "models" / "base" / "Qwen_Qwen2-7B-Instruct"),
+        default=str(PROJECT_ROOT / "models" / "base" / "Qwen_Qwen2.5-7B-Instruct"),
         help="模型路径"
     )
     parser.add_argument(
         "--model-name",
         type=str,
-        default="Qwen/Qwen2-7B-Instruct",
+        default="Qwen/Qwen2.5-7B-Instruct",
         help="如果本地模型不存在，从 HuggingFace 下载的模型名称"
     )
 

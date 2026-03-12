@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 模型下载脚本
-下载 Qwen2-7B-Instruct 基座模型到本地
+下载 Qwen2.5-7B-Instruct 基座模型到本地
 """
 
 import os
@@ -143,8 +143,8 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="Qwen/Qwen2-7B-Instruct",
-        help="模型名称 (默认: Qwen/Qwen2-7B-Instruct)"
+        default="Qwen/Qwen2.5-7B-Instruct",
+        help="模型名称 (默认: Qwen/Qwen2.5-7B-Instruct)"
     )
     parser.add_argument(
         "--save-dir",
