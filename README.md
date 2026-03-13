@@ -308,6 +308,226 @@ ChatML 是 OpenAI 提出的对话格式，被 Qwen 等模型广泛采用：
 | fp16 | True | 混合精度 | 节省显存、加速训练 |
 | optim | paged_adamw_8bit | 优化器 | 8-bit 优化器节省显存 |
 
+### 2.5 模型评估方法
+
+#### 2.5.1 自动化评估指标
+
+**① Perplexity（困惑度）**
+
+```
+含义：衡量模型对文本的"惊讶程度"，越低越好
+
+计算公式：PPL = exp(平均交叉熵损失)
+         PPL = exp(-1/N × Σlog P(w_i|context))
+
+┌─────────────────────────────────────────────────────────┐
+│  PPL < 10   → 模型对文本预测非常准确                      │
+│  PPL 10-20  → 正常范围，模型理解文本                       │
+│  PPL 20-50  → 模型对领域不太熟悉，可能需要更多训练          │
+│  PPL > 50   → 模型困惑，预测能力较差                       │
+└─────────────────────────────────────────────────────────┘
+
+本项目目标：PPL < 15（心理咨询领域文本）
+```
+
+**② BLEU（双语评估替补）**
+
+```
+含义：衡量生成文本与参考文本的 n-gram 重叠度
+
+计算原理：
+├── 比较 1-gram（单词匹配）、2-gram（短语匹配）等
+├── 计算精确率（生成中有多少在参考中出现）
+├── 加入简洁度惩罚（避免生成过短）
+└── BLEU-4 最常用，同时考虑 1 到 4-gram
+
+评分范围：0-100
+├── 0-10   → 几乎不相关
+├── 10-20  → 有一定相关性
+├── 20-40  → 中等质量
+└── 40+    → 较高质量
+
+注意：BLEU 对同义表达敏感，心理咨询强调共情而非逐字匹配
+本项目参考目标：BLEU-4 ≥ 15
+```
+
+**③ ROUGE（面向召回的摘要评估）**
+
+```
+含义：衡量生成文本覆盖参考文本多少内容
+
+常用变体：
+├── ROUGE-1：单字重叠率（覆盖率）
+├── ROUGE-2：双字重叠率（流畅性）
+└── ROUGE-L：最长公共子序列（整体相似度）
+
+本项目参考目标：
+├── ROUGE-1 ≥ 0.3
+├── ROUGE-2 ≥ 0.15
+└── ROUGE-L ≥ 0.25
+```
+
+#### 2.5.2 人工评估维度
+
+心理咨询对话模型需要人工评估，因为自动化指标无法衡量**共情**和**专业性**：
+
+| 维度 | 权重 | 评估标准 | 目标值 |
+|------|------|---------|-------|
+| **专业度** | 30% | 心理学知识准确、建议合理可行 | ≥90% |
+| **共情能力** | 30% | 理解用户情绪、表达接纳和支持 | ≥90% |
+| **格式规范** | 20% | 遵守系统提示的回复结构 | ≥95% |
+| **语言流畅** | 10% | 语句通顺、无语法错误 | ≥95% |
+| **安全性** | 10% | 无有害建议、无歧视言论 | 100% |
+
+**人工评估流程**：
+```
+1. 随机抽取 100 条测试样本
+2. 3 位评估员独立打分（1-5 分）
+3. 计算 Cohen's Kappa 一致性系数（需 ≥0.6）
+4. 加权平均得到最终得分
+```
+
+#### 2.5.3 对比评估（A/B Testing）
+
+```
+┌──────────────────────────────────────────────────────┐
+│                    对比评估流程                        │
+├──────────────────────────────────────────────────────┤
+│  输入：同一用户问题                                    │
+│     ↓                                                 │
+│  模型A（基座模型）生成回复  │  模型B（微调后）生成回复    │
+│     ↓                      │      ↓                   │
+│  ┌─────────────────────────┴───────────────────────┐  │
+│  │           评估员盲选更好的回复                    │  │
+│  └─────────────────────────────────────────────────┘  │
+│     ↓                                                 │
+│  统计：微调模型胜率 ≥70% 视为有效                      │
+└──────────────────────────────────────────────────────┘
+```
+
+### 2.6 数据增强方法
+
+#### 2.6.1 为什么需要数据增强？
+
+```
+原始数据问题：
+├── 样本量有限（通常 1000-5000 条）
+├── 话题分布不均（某些心理问题样本少）
+├── 表达方式单一（用户提问风格趋同）
+└── 模型容易过拟合、泛化能力差
+
+数据增强目标：
+├── 增加样本多样性
+├── 平衡话题分布
+├── 提高模型鲁棒性
+└── 改善泛化能力
+```
+
+#### 2.6.2 常用数据增强技术
+
+**① 同义词替换（Synonym Replacement）**
+
+```
+原理：随机选择句子中的非停用词，用同义词替换
+
+示例：
+原文："我最近感觉很焦虑，睡不好觉"
+增强："我最近感觉很忧虑，睡不好觉"（焦虑→忧虑）
+
+实现：
+├── 使用同义词词典（如 Hownet）
+├── 控制替换比例（通常 10-20% 的词）
+└── 避免替换专业术语（如"认知行为疗法"）
+```
+
+**② 回译（Back Translation）**
+
+```
+原理：中文→英文→中文，利用翻译差异产生变体
+
+流程：
+原文："我想改变现在的状态"
+  ↓ 英译
+"I want to change my current situation"
+  ↓ 中译
+增强："我想改变目前的处境"
+
+优点：
+├── 保持语义不变
+├── 产生自然多样的表达
+└── 适用于各类文本
+```
+
+**③ GPT 辅助改写**
+
+```
+原理：利用大模型对原始对话进行风格改写或扩展
+
+Prompt 示例：
+"请将以下心理咨询对话改写成不同表达方式，
+ 保持专业性和共情，但使用不同的措辞：
+
+ 用户：[原始用户输入]
+ 咨询师：[原始回复]
+
+ 请生成 3 个不同版本的回复。"
+
+优点：
+├── 生成质量高
+├── 可控制改写方向
+└── 能增加话题多样性
+```
+
+**④ 角色扮演数据生成**
+
+```
+原理：让 GPT 模拟不同类型的来访者生成对话
+
+Prompt 示例：
+"请扮演一位有以下特征的来访者，生成 5 条咨询问题：
+ - 年龄：25岁
+ - 困扰：职场压力
+ - 性格：内向
+ - 表达风格：含蓄"
+
+生成的数据可用于：
+├── 补充稀有人群样本
+├── 增加话题覆盖
+└── 平衡数据分布
+```
+
+#### 2.6.3 本项目数据增强策略
+
+| 方法 | 使用场景 | 增强比例 | 注意事项 |
+|------|---------|---------|---------|
+| 回译 | 所有数据 | 1:1 | 人工抽检语义一致性 |
+| GPT改写 | 高质量样本 | 1:2 | 控制改写多样性 |
+| 同义词替换 | 长文本样本 | 10% | 避免替换专业术语 |
+| 角色扮演 | 稀有话题 | 按需 | 人工审核质量 |
+
+**数据增强后处理**：
+```
+1. 过滤：去除语义偏差大的样本
+2. 去重：避免重复样本
+3. 人工抽检：随机检查 100 条增强样本质量
+4. 平衡：确保各心理问题类型分布均匀
+```
+
+#### 2.6.4 数据增强效果评估
+
+```
+评估指标：
+├── 模型泛化能力：在未见过的测试集上表现
+├── 过拟合程度：训练集与验证集 Loss 差距
+├── 话题覆盖：各类型问题的回复质量
+└── 鲁棒性：对异常输入的处理能力
+
+期望效果：
+├── 验证集 PPL 降低 5-10%
+├── 人工评估分数提升 3-5%
+└── 话题分布更均衡
+```
+
 ---
 
 ## 三、技术栈与环境
@@ -375,8 +595,8 @@ MentalChat/
 │       ├── train.jsonl
 │       ├── valid.jsonl
 │       └── test.jsonl
-├── models/
-│   ├── base/                  # 基座模型
+├── /root/autodl-tmp/MentalChat/models/   # 模型目录（AutoDL数据盘）
+│   ├── base/                  # 基座模型（约15GB）
 │   │   └── Qwen_Qwen2.5-7B-Instruct/
 │   └── lora/                  # LoRA 权重
 ├── scripts/
@@ -437,7 +657,7 @@ python scripts/check_environment.py
 | 项目 | 说明 |
 |------|------|
 | 基座模型名称 | `Qwen/Qwen2.5-7B-Instruct` |
-| 本地保存路径 | `models/base/Qwen_Qwen2.5-7B-Instruct/` |
+| 本地保存路径 | `/root/autodl-tmp/MentalChat/models/base/Qwen_Qwen2.5-7B-Instruct/` |
 | 模型精度 | **FP16/BF16 混合精度**（HuggingFace 默认格式） |
 | 模型大小 | 约 **15GB**（7.6B 参数 × 2 bytes = 15.2GB） |
 
@@ -453,15 +673,96 @@ export HF_ENDPOINT=https://hf-mirror.com
 
 # 方式1：使用脚本下载（推荐）
 python scripts/download_model.py --mirror
+```
 
-# 方式2：手动下载到指定路径
-# 模型会保存到: /root/MentalChat/models/base/Qwen_Qwen2.5-7B-Instruct/
+**方式2：使用 huggingface-cli 下载**
+```bash
+# 安装 huggingface_hub
+pip install huggingface_hub
+
+# 设置镜像
+export HF_ENDPOINT=https://hf-mirror.com
+
+# 下载模型到指定目录
+huggingface-cli download \
+  Qwen/Qwen2.5-7B-Instruct \
+  --local-dir /root/autodl-tmp/MentalChat/models/base/Qwen_Qwen2.5-7B-Instruct \
+  --local-dir-use-symlinks False
+```
+
+**方式3：使用 ModelScope 下载（国内更快）**
+```bash
+# 安装 modelscope
+pip install modelscope
+
+# 下载模型
+python -c "
+from modelscope import snapshot_download
+snapshot_download(
+    'Qwen/Qwen2.5-7B-Instruct',
+    cache_dir='/root/autodl-tmp/MentalChat/models/base'
+)
+"
+```
+
+> **说明**：所有方式都会将模型保存到 `/root/autodl-tmp/MentalChat/models/base/`（AutoDL数据盘），避免占用系统盘空间。
+
+**后台下载（断开SSH后继续下载）**：
+
+模型约15GB，下载需要较长时间。以下方法可以让你关闭本地终端后远程主机继续下载：
+
+**方法一：使用 nohup（推荐）**
+```bash
+# 后台运行下载脚本，日志保存到文件
+nohup python scripts/download_model.py --mirror > download.log 2>&1 &
+
+# 查看下载进度
+tail -f download.log
+
+# 查看进程是否在运行
+ps aux | grep download_model
+```
+
+**方法二：使用 tmux**
+```bash
+# 创建新会话
+tmux new -s download
+
+# 在 tmux 会话中运行下载
+conda activate mental_chat
+export HF_ENDPOINT=https://hf-mirror.com
+python scripts/download_model.py --mirror
+
+# 断开会话（保持后台运行）：Ctrl+B 然后按 D
+# 重新连接：tmux attach -t download
+# 查看所有会话：tmux ls
+```
+
+**方法三：使用 screen**
+```bash
+# 创建新窗口
+screen -S download
+
+# 在 screen 窗口中运行下载
+conda activate mental_chat
+export HF_ENDPOINT=https://hf-mirror.com
+python scripts/download_model.py --mirror
+
+# 断开窗口（保持后台运行）：Ctrl+A 然后按 D
+# 重新连接：screen -r download
+# 查看所有窗口：screen -ls
+```
+
+**下载完成后验证**：
+```bash
+# 验证模型是否下载成功
+python scripts/download_model.py --verify-only /root/autodl-tmp/MentalChat/models/base/Qwen_Qwen2.5-7B-Instruct
 ```
 
 **下载后的目录结构**：
 
 ```
-models/base/Qwen_Qwen2.5-7B-Instruct/
+/root/autodl-tmp/MentalChat/models/base/Qwen_Qwen2.5-7B-Instruct/
 ├── config.json              # 模型配置
 ├── generation_config.json   # 生成配置
 ├── model-00001-of-00004.safetensors  # 模型权重（分片）
@@ -519,7 +820,7 @@ python scripts/train.py
 | Python 环境 | `conda create -n mental_chat python=3.10` | 环境创建成功 |
 | 依赖安装 | `pip install -r requirements.txt` | 无报错 |
 | 环境验证 | `python scripts/check_environment.py` | 所有检查通过 |
-| 模型下载 | `python scripts/download_model.py --mirror` | 保存到 `models/base/Qwen_Qwen2.5-7B-Instruct/` |
+| 模型下载 | `python scripts/download_model.py --mirror` | 保存到 `/root/autodl-tmp/MentalChat/models/base/Qwen_Qwen2.5-7B-Instruct/` |
 | QLoRA 验证 | `python scripts/verify_qlora.py` | 验证通过（显存约 6GB） |
 
 ### 6.2 阶段二：数据处理（1-2天）

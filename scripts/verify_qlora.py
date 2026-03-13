@@ -238,8 +238,8 @@ def main():
     parser.add_argument(
         "--model-path",
         type=str,
-        default=str(PROJECT_ROOT / "models" / "base" / "Qwen_Qwen2.5-7B-Instruct"),
-        help="模型路径"
+        default="/root/autodl-tmp/MentalChat/models/base/Qwen_Qwen2.5-7B-Instruct",
+        help="模型路径（默认使用AutoDL数据盘路径）"
     )
     parser.add_argument(
         "--model-name",

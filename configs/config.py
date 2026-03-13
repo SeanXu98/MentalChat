@@ -19,7 +19,8 @@ class ModelConfig:
     """模型配置"""
     # 基座模型
     base_model_name: str = "Qwen/Qwen2.5-7B-Instruct"
-    base_model_path: str = str(PROJECT_ROOT / "models" / "base" / "Qwen_Qwen2.5-7B-Instruct")
+    # AutoDL 数据盘路径（避免占用系统盘空间）
+    base_model_path: str = "/root/autodl-tmp/MentalChat/models/base/Qwen_Qwen2.5-7B-Instruct"
 
     # 是否使用本地模型
     use_local_model: bool = True
@@ -56,8 +57,8 @@ class LoRAConfig:
 @dataclass
 class TrainingConfig:
     """训练配置"""
-    # 输出目录
-    output_dir: str = str(PROJECT_ROOT / "outputs" / "checkpoints")
+    # 输出目录（AutoDL数据盘路径）
+    output_dir: str = "/root/autodl-tmp/MentalChat/outputs/checkpoints"
 
     # 训练参数
     num_train_epochs: int = 3

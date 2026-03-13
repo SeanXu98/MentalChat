@@ -149,8 +149,8 @@ def main():
     parser.add_argument(
         "--save-dir",
         type=str,
-        default=str(PROJECT_ROOT / "models" / "base"),
-        help="模型保存目录"
+        default="/root/autodl-tmp/MentalChat/models/base",
+        help="模型保存目录（默认使用AutoDL数据盘，避免占用系统盘空间）"
     )
     parser.add_argument(
         "--mirror",
