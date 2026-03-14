@@ -6,14 +6,14 @@
 
 ## 目录
 
-1. [项目背景与目标](#一项目背景与目标)
-2. [微调背景知识](#二微调背景知识)
-3. [技术栈与环境](#三技术栈与环境)
-4. [项目结构](#四项目结构)
-5. [快速开始](#五快速开始)
-6. [详细执行步骤](#六详细执行步骤)
-7. [常见问题](#七常见问题)
-8. [面试要点](#八面试要点)
+- [项目背景与目标](#一项目背景与目标)
+- [微调背景知识](#二微调背景知识)
+- [技术栈与环境](#三技术栈与环境)
+- [项目结构](#四项目结构)
+- [快速开始](#五快速开始)
+- [详细执行步骤](#六详细执行步骤)
+- [数据增强说明](#七数据增强说明)
+- [常见问题](#八常见问题)
 
 ---
 
@@ -23,562 +23,433 @@
 
 通用大模型在心理咨询客服场景存在明显痛点：
 
-| 痛点 | 具体表现 | 影响 |
-|------|---------|------|
-| 专业度不足 | 对抑郁、焦虑等问题的回复缺乏行业规范 | 可能给出不恰当建议 |
-| 共情能力弱 | 无法贴合来访者情绪给出安抚性话术 | 用户体验差 |
-| 格式不统一 | 输出无规律，无固定话术框架 | 无法对接客服流程 |
-| 成本过高 | 全量微调显存占用大、周期长 | 中小企业难以落地 |
+| 痛点 | 具体表现 |
+|------|----------|
+| 缺乏专业知识 | 无法识别心理学术语，难以提供专业建议 |
+| 共情能力不足 | 回复过于机械，缺乏情感理解和人文关怀 |
+| 安全边界模糊 | 可能给出危险建议或无法识别危机情况（如自杀倾向） |
+| 场景适配差 | 通用回复不够贴近心理咨询对话风格和节奏 |
 
 ### 1.2 项目目标
 
-| 维度 | 具体目标 |
-|------|---------|
-| 效果 | 回答专业度、共情贴合度 ≥90%；话术格式合规率 ≥95% |
-| 工程 | 单卡 RTX 4090（24G）可稳定训练；推理延迟 ≤100ms |
-| 落地 | 封装 API 接口；配套可视化 Demo |
+- **专业化**：让模型掌握心理咨询领域知识和对话技巧
+- **共情化**：提升模型的情感理解和表达能力
+- **安全性**：模型能够识别危机情况并给出恰当回应
+- **实用性**：满足实际客服场景的对话需求
 
-### 1.3 核心产出
+### 1.3 应用场景
 
-- **微调模型**：适配心理咨询场景的 Qwen2.5-7B 模型
-- **LoRA 权重**：约 100MB，便于存储和部署
-- **API 服务**：FastAPI 封装的推理接口
-- **可视化 Demo**：Gradio 构建的演示界面
+- 在线心理咨询平台
+- 心理健康热线辅助系统
+- 企业员工心理援助计划（EAP）
+- 心理健康教育问答系统
 
 ---
 
 ## 二、微调背景知识
 
-### 2.1 为什么选择 LoRA/QLoRA？
+> 本章详细介绍大模型微调的核心概念、原理和技术细节，帮助读者深入理解 QLoRA 微调的底层机制。
 
-**全量微调的痛点**：
-- 显存占用高：7B 模型全量微调需 80G+ 显存
-- 训练成本高：周期长（7天+），算力昂贵
-- 易过拟合：小样本场景下破坏模型通用能力
+### 2.1 什么是微调 (Fine-tuning)
 
-**LoRA 的优势**：
-```
-原始权重矩阵 W (4096 × 4096)
-         ↓ LoRA 分解
-低秩矩阵 A (4096 × 16) + 低秩矩阵 B (16 × 4096)
+#### 2.1.1 基本概念
 
-可训练参数：16 × (4096 + 4096) = 131,072
-原始参数：4096 × 4096 = 16,777,216
-参数比例：约 0.78%（减少 99% 以上）
-```
+微调（Fine-tuning）是指在预训练模型的基础上，使用特定领域或任务的数据进行进一步训练，使模型适应特定场景。
 
-**QLoRA 的优化**：
-- 4-bit 量化：显存从 20G 降至 11G
-- NF4 格式：专为大模型设计，精度损失 <5%
-- 双量化：进一步节省约 0.5GB 显存
+**为什么需要微调？**
 
-### 2.2 模型精度与显存计算
+1. **领域适配**：预训练模型是通用的，特定领域（如医疗、法律、心理咨询）需要专门的知识
+2. **风格定制**：调整模型的输出风格，使其符合特定应用场景
+3. **任务优化**：针对特定任务（如分类、生成、对话）进行优化
+4. **成本效益**：相比从头训练，微调可以用较少的数据和计算资源获得更好的效果
 
-#### 2.2.1 精度类型说明
+#### 2.1.2 微调的分类
 
-| 精度类型 | 每参数字节数 | 数值范围 | 适用场景 |
-|---------|------------|---------|---------|
-| FP32 (全精度) | 4 bytes | ±3.4×10³⁸ | 科学计算、训练 |
-| FP16 (半精度) | 2 bytes | ±65,504 | 训练、推理 |
-| BF16 (脑浮点) | 2 bytes | 同 FP32 范围 | 训练（推荐） |
-| INT8 (8位整型) | 1 byte | -128 ~ 127 | 量化推理 |
-| INT4 / NF4 | 0.5 bytes | -8 ~ 7 | 极限量化 |
+| 类型 | 说明 | 参数量 | 适用场景 |
+|------|------|--------|----------|
+| **全量微调** | 更新所有模型参数 | 100% | 大规模数据、高性能硬件 |
+| **参数高效微调 (PEFT)** | 只更新部分参数 | <1% | 资源受限场景 |
+| **提示微调 (Prompt Tuning)** | 只优化提示向量 | 极少 | 简单任务 |
+| **前缀微调 (Prefix Tuning)** | 在每层添加可学习前缀 | ~0.1% | 生成任务 |
 
-#### 2.2.2 显存占用计算公式
+### 2.2 PEFT 框架详解
+
+#### 2.2.1 什么是 PEFT
+
+PEFT (Parameter-Efficient Fine-Tuning) 是 Hugging Face 提供的参数高效微调框架，包含多种微调方法：
 
 ```
-模型显存占用 ≈ 参数量 × 每参数字节数
-
-以 Qwen2.5-7B 为例（实际参数量约 7.6B）：
-┌────────────────────────────────────────────────────────┐
-│  FP32: 7.6B × 4 bytes = 30.4 GB  (全精度，极少使用)      │
-│  FP16: 7.6B × 2 bytes = 15.2 GB  (HuggingFace 默认)    │
-│  BF16: 7.6B × 2 bytes = 15.2 GB  (训练推荐)             │
-│  INT8: 7.6B × 1 byte  = 7.6 GB   (8-bit 量化)          │
-│  INT4: 7.6B × 0.5 byte = 3.8 GB  (4-bit 量化)          │
-└────────────────────────────────────────────────────────┘
+PEFT 方法分类
+├── LoRA 系列
+│   ├── LoRA (Low-Rank Adaptation)
+│   ├── QLoRA (Quantized LoRA)
+│   └── AdaLoRA (Adaptive LoRA)
+├── Prompt 系列
+│   ├── Prompt Tuning
+│   ├── Prefix Tuning
+│   └── P-Tuning
+└── Adapter 系列
+    ├── Adapter
+    ├── AdapterHub
+    └── IA³
 ```
 
-#### 2.2.3 本项目基座模型说明
+#### 2.2.2 PEFT 的优势
 
-**下载的 Qwen2.5-7B-Instruct 是什么精度？**
+| 优势 | 说明 |
+|------|------|
+| **显存效率** | 只需存储少量可训练参数，大幅降低显存需求 |
+| **存储效率** | 微调后的权重文件很小（MB 级别），便于分享和部署 |
+| **训练速度** | 参数少，反向传播更快 |
+| **多任务支持** | 可以为不同任务训练不同的适配器，共享基座模型 |
+| **避免灾难性遗忘** | 基座模型参数不变，保留原有能力 |
 
-> **FP16/BF16 混合精度**，这就是为什么模型文件约 15GB。
+### 2.3 LoRA 原理详解
 
-HuggingFace 上的模型权重通常以 FP16 或 BF16 格式存储（ safetensors 格式），这是业界标准做法：
-- 精度足够：保持模型性能
-- 体积适中：比 FP32 小一半
-- 兼容性好：大多数框架直接支持
+#### 2.3.1 LoRA 的核心思想
 
-**训练时的显存占用**：
+LoRA (Low-Rank Adaptation) 的核心假设：**模型微调过程中的权重更新具有低秩特性**。
 
-| 阶段 | 显存组成 | 7B 模型估算 |
-|------|---------|-----------|
-| 加载模型 | FP16 权重 | ~15 GB |
-| + 梯度 | FP16 梯度 | +15 GB |
-| + 优化器状态 | FP32 动量 | +30 GB |
-| + 激活值 | 中间计算 | +5-10 GB |
-| **全量微调总计** | | **~65-70 GB** |
+假设预训练模型的权重矩阵为 $W_0 \in \mathbb{R}^{d \times k}$，微调后的权重为 $W = W_0 + \Delta W$。LoRA 认为 $\Delta W$ 可以分解为两个低秩矩阵的乘积：
 
-**QLoRA 训练时**：
+$$\Delta W = B \times A$$
 
-| 阶段 | 显存组成 | 7B 模型估算 |
-|------|---------|-----------|
-| 加载模型 | 4-bit 量化权重 | ~4 GB |
-| + LoRA 权重 | FP16 低秩矩阵 | +0.1 GB |
-| + 梯度 | 仅 LoRA 部分 | +0.1 GB |
-| + 优化器状态 | 8-bit 优化器 | +0.5 GB |
-| + 激活值 | 中间计算 | +3-5 GB |
-| **QLoRA 微调总计** | | **~8-10 GB** |
+其中：
+- $B \in \mathbb{R}^{d \times r}$：降维矩阵
+- $A \in \mathbb{R}^{r \times k}$：升维矩阵
+- $r \ll \min(d, k)$：秩（rank），通常取 4-64
 
-### 2.3 核心概念详解
+#### 2.3.2 LoRA 的数学推导
 
-#### 2.2.1 Transformers 库
+**参数量对比：**
 
-```
-┌─────────────────────────────────────────────────────┐
-│                  Transformers 库                     │
-├─────────────────────────────────────────────────────┤
-│  AutoTokenizer      文本分词器                        │
-│  AutoModelForCausalLM   因果语言模型（文本生成）        │
-│  TrainingArguments  训练参数配置                      │
-│  Trainer            训练器封装                        │
-│  BitsAndBytesConfig 量化配置                         │
-└─────────────────────────────────────────────────────┘
+| 方法 | 参数量 | 示例 (d=k=4096) |
+|------|--------|-----------------|
+| 全量微调 | $d \times k$ | 16,777,216 |
+| LoRA (r=16) | $d \times r + r \times k$ | 131,072 |
+| 压缩比 | - | **128 倍** |
+
+**前向传播：**
+
+```python
+# 原始线性层
+output = W0 @ x
+
+# LoRA 增强后
+output = W0 @ x + (B @ A) @ x
+output = W0 @ x + B @ (A @ x)  # 计算效率更高
 ```
 
-**关键类说明**：
+**缩放因子：**
 
-| 类名 | 作用 | 项目用途 |
-|------|------|---------|
-| AutoTokenizer | 将文本转换为 token | 处理输入输出文本 |
-| AutoModelForCausalLM | 加载生成式模型 | 加载 Qwen2.5-7B |
-| BitsAndBytesConfig | 配置量化参数 | 实现 4-bit 量化 |
+LoRA 引入缩放因子 $\alpha$ 来控制适配器的影响：
 
-#### 2.2.2 PEFT 库
+$$h = W_0 x + \frac{\alpha}{r} BAx$$
 
-```
-┌─────────────────────────────────────────────────────┐
-│                    PEFT 库                           │
-├─────────────────────────────────────────────────────┤
-│  LoraConfig         LoRA 参数配置                     │
-│  get_peft_model     将 LoRA 应用到模型                │
-│  prepare_model_for_kbit_training  准备量化训练        │
-└─────────────────────────────────────────────────────┘
-```
+通常设置 $\alpha = 2r$，使得缩放因子为 2。
 
-**LoRA 关键参数深度解析**：
+#### 2.3.3 LoRA 应用于 Transformer
 
-#### ① r (秩 / Rank)
+在 Transformer 中，LoRA 通常应用于注意力层的投影矩阵：
 
 ```
-含义：LoRA 低秩分解的秩，决定了可训练参数的数量
-
-原始权重 W: (4096, 4096) = 16,777,216 参数
-LoRA 分解: W' = W + BA
-  - 矩阵 A: (4096, r)    r=16 时 = 65,536 参数
-  - 矩阵 B: (r, 4096)    r=16 时 = 65,536 参数
-  - 总参数: 2 × 4096 × r = 131,072 参数 (r=16)
-
-不同 r 值对比：
-┌─────┬──────────────┬───────────┬────────────────┐
-│  r  │  可训练参数   │  显存占用  │     效果       │
-├─────┼──────────────┼───────────┼────────────────┤
-│  8  │   65,536     │  更低     │ 表达能力有限   │
-│ 16  │  131,072     │  适中     │ 推荐：平衡点   │
-│ 32  │  262,144     │  较高     │ 收益递减       │
-│ 64  │  524,288     │  高       │ 过拟合风险     │
-└─────┴──────────────┴───────────┴────────────────┘
-
-为什么选 r=16？
-- 实验证明：r=16 在大多数任务上已接近全量微调效果
-- r>32 后性能提升不明显，但显存和计算成本线性增长
-- r<8 时表达能力不足，难以学到复杂的领域知识
+Transformer Block
+├── Self-Attention
+│   ├── Q_proj (Query)    ← LoRA 目标
+│   ├── K_proj (Key)
+│   ├── V_proj (Value)    ← LoRA 目标
+│   └── O_proj (Output)
+├── MLP
+│   ├── gate_proj         ← LoRA 目标 (可选)
+│   ├── up_proj           ← LoRA 目标 (可选)
+│   └── down_proj         ← LoRA 目标 (可选)
+└── LayerNorm (不应用 LoRA)
 ```
 
-#### ② lora_alpha (缩放因子)
+**常见配置：**
+
+| 配置 | target_modules | 参数量 | 效果 |
+|------|----------------|--------|------|
+| 最小配置 | ["q_proj", "v_proj"] | 最少 | 基础效果 |
+| 推荐配置 | ["q_proj", "v_proj", "k_proj", "o_proj"] | 中等 | 较好效果 |
+| 完整配置 | ["all_linear_layers"] | 最多 | 最佳效果 |
+
+#### 2.3.4 LoRA 的初始化
+
+LoRA 的初始化策略确保训练开始时不影响基座模型：
+
+- **矩阵 A**：使用随机高斯分布初始化 $A \sim \mathcal{N}(0, \sigma^2)$
+- **矩阵 B**：初始化为零 $B = 0$
+
+这样 $\Delta W = B \times A = 0$，训练开始时 $W = W_0$。
+
+### 2.4 QLoRA 原理详解
+
+#### 2.4.1 QLoRA 的创新点
+
+QLoRA 在 LoRA 的基础上引入了三项创新：
 
 ```
-含义：控制 LoRA 更新的缩放比例，影响学习强度
+QLoRA = LoRA + 量化技术
 
-实际更新公式：ΔW = (lora_alpha / r) × B × A
-              缩放系数 = alpha / r
-
-示例计算：
-- r=16, alpha=32 → 缩放系数 = 32/16 = 2.0
-- r=16, alpha=16 → 缩放系数 = 16/16 = 1.0
-- r=16, alpha=64 → 缩放系数 = 64/16 = 4.0
-
-为什么 alpha 通常设为 2×r？
-├── 经验法则：alpha=2r 是最稳定的设置
-├── 缩放系数=2：适度的更新强度，不会过激
-├── 配合 learning_rate=2e-4：形成合理的有效学习率
-└── 太大会导致训练不稳定，太小则学习太慢
-
-调节建议：
-- 如果 loss 震荡 → 减小 alpha 或降低 learning_rate
-- 如果 loss 下降太慢 → 增大 alpha 或提高 learning_rate
+创新点：
+1. 4-bit NormalFloat (NF4) 量化
+2. 双重量化 (Double Quantization)
+3. 分页优化器 (Paged Optimizers)
 ```
 
-#### ③ target_modules (目标模块)
+#### 2.4.2 4-bit NormalFloat (NF4) 量化
+
+**量化基础：**
+
+量化是将高精度浮点数映射到低精度表示的过程。
+
+| 数据类型 | 位数 | 数值范围 | 精度 |
+|----------|------|----------|------|
+| FP32 | 32 | ±3.4e38 | ~7位有效数字 |
+| FP16 | 16 | ±65504 | ~3位有效数字 |
+| BF16 | 16 | ±3.4e38 | ~2位有效数字 |
+| INT8 | 8 | -128 ~ 127 | 整数 |
+| **NF4** | **4** | **-1 ~ 1** | **信息论最优** |
+
+**NF4 的优势：**
+
+NF4 是针对正态分布权重设计的信息论最优量化数据类型：
+
+1. **信息论最优**：对于正态分布的权重，NF4 提供最优的量化精度
+2. **无需校准**：不需要额外的校准数据
+3. **零样本量化**：可以直接量化预训练模型
+
+**量化过程：**
 
 ```
-含义：指定要应用 LoRA 的模型层
-
-Transformer 注意力结构：
-                    ┌─────────────────┐
-                    │   Attention     │
-                    ├─────────────────┤
-  Query (Q) ───────►│  q_proj         │◄── LoRA 重点
-  Key (K) ─────────►│  k_proj         │
-  Value (V) ───────►│  v_proj         │◄── LoRA 重点
-  Output ─────────►│  o_proj         │
-                    └─────────────────┘
-
-为什么选择 q_proj 和 v_proj？
-├── q_proj (Query)：决定"关注什么"
-│   └── 影响模型对问题的理解方式
-├── v_proj (Value)：决定"提取什么信息"
-│   └── 影响模型生成回复的内容选择
-├── 实验结论：q_proj + v_proj 覆盖 80% 的效果
-└── 微调更多层（如 k_proj, o_proj）收益有限但显存增加
-
-扩展选项：
-- 最小配置：["q_proj", "v_proj"] ← 推荐
-- 中等配置：["q_proj", "k_proj", "v_proj", "o_proj"]
-- 最大配置：加上 MLP 层 ["gate_proj", "up_proj", "down_proj"]
-```
-
-#### ④ lora_dropout (Dropout 率)
-
-```
-含义：LoRA 层的 Dropout 比例，用于正则化
-
-作用机制：
-训练时：随机"丢弃"一定比例的神经元，防止过拟合
-推理时：使用全部神经元
-
-为什么设 0.05？
-├── 小数据集容易过拟合，需要正则化
-├── 0.05 是轻度正则化，不会过度限制学习能力
-├── 配合 3 个 epoch：防止模型过度记忆训练数据
-└── 太大（如 0.1-0.2）会降低模型收敛速度
-
-调节建议：
-- 数据量 < 1000 条 → dropout=0.1
-- 数据量 1000-10000 条 → dropout=0.05 ← 推荐
-- 数据量 > 10000 条 → dropout=0.0 或 0.02
-```
-
-### 2.3 数据格式：ChatML
-
-ChatML 是 OpenAI 提出的对话格式，被 Qwen 等模型广泛采用：
-
-```json
-{
-  "messages": [
-    {"role": "system", "content": "你是一名专业的心理咨询客服..."},
-    {"role": "user", "content": "我最近很迷茫..."},
-    {"role": "assistant", "content": "看到你面临的困境..."}
-  ]
-}
-```
-
-**System Prompt 设计**：
-```
-你是一名专业的心理咨询客服，请根据来访者的问题，给出专业、共情的回复。
-
-回复要求：
-1. 首先表达对来访者情绪的理解和接纳
-2. 分析来访者可能面临的问题
-3. 提供具体、可行的建议
-4. 以开放式问题或鼓励性话语引导来访者继续表达
-
-注意：保持温和、专业的语气，避免过于绝对的建议，尊重来访者的感受。
-```
-
-### 2.4 训练参数解读
-
-| 参数 | 设置值 | 含义 | 为什么这样设置 |
-|------|-------|------|---------------|
-| num_train_epochs | 3 | 训练轮数 | 小样本避免过拟合 |
-| per_device_train_batch_size | 4 | 单卡批次大小 | 适配 24G 显存 |
-| gradient_accumulation_steps | 4 | 梯度累积 | 等效 batch_size=16 |
-| learning_rate | 2e-4 | 学习率 | LoRA 常用范围 |
-| fp16 | True | 混合精度 | 节省显存、加速训练 |
-| optim | paged_adamw_8bit | 优化器 | 8-bit 优化器节省显存 |
-
-### 2.5 模型评估方法
-
-#### 2.5.1 自动化评估指标
-
-**① Perplexity（困惑度）**
-
-```
-含义：衡量模型对文本的"惊讶程度"，越低越好
-
-计算公式：PPL = exp(平均交叉熵损失)
-         PPL = exp(-1/N × Σlog P(w_i|context))
-
-┌─────────────────────────────────────────────────────────┐
-│  PPL < 10   → 模型对文本预测非常准确                      │
-│  PPL 10-20  → 正常范围，模型理解文本                       │
-│  PPL 20-50  → 模型对领域不太熟悉，可能需要更多训练          │
-│  PPL > 50   → 模型困惑，预测能力较差                       │
-└─────────────────────────────────────────────────────────┘
-
-本项目目标：PPL < 15（心理咨询领域文本）
-```
-
-**② BLEU（双语评估替补）**
-
-```
-含义：衡量生成文本与参考文本的 n-gram 重叠度
-
-计算原理：
-├── 比较 1-gram（单词匹配）、2-gram（短语匹配）等
-├── 计算精确率（生成中有多少在参考中出现）
-├── 加入简洁度惩罚（避免生成过短）
-└── BLEU-4 最常用，同时考虑 1 到 4-gram
-
-评分范围：0-100
-├── 0-10   → 几乎不相关
-├── 10-20  → 有一定相关性
-├── 20-40  → 中等质量
-└── 40+    → 较高质量
-
-注意：BLEU 对同义表达敏感，心理咨询强调共情而非逐字匹配
-本项目参考目标：BLEU-4 ≥ 15
-```
-
-**③ ROUGE（面向召回的摘要评估）**
-
-```
-含义：衡量生成文本覆盖参考文本多少内容
-
-常用变体：
-├── ROUGE-1：单字重叠率（覆盖率）
-├── ROUGE-2：双字重叠率（流畅性）
-└── ROUGE-L：最长公共子序列（整体相似度）
-
-本项目参考目标：
-├── ROUGE-1 ≥ 0.3
-├── ROUGE-2 ≥ 0.15
-└── ROUGE-L ≥ 0.25
-```
-
-#### 2.5.2 人工评估维度
-
-心理咨询对话模型需要人工评估，因为自动化指标无法衡量**共情**和**专业性**：
-
-| 维度 | 权重 | 评估标准 | 目标值 |
-|------|------|---------|-------|
-| **专业度** | 30% | 心理学知识准确、建议合理可行 | ≥90% |
-| **共情能力** | 30% | 理解用户情绪、表达接纳和支持 | ≥90% |
-| **格式规范** | 20% | 遵守系统提示的回复结构 | ≥95% |
-| **语言流畅** | 10% | 语句通顺、无语法错误 | ≥95% |
-| **安全性** | 10% | 无有害建议、无歧视言论 | 100% |
-
-**人工评估流程**：
-```
-1. 随机抽取 100 条测试样本
-2. 3 位评估员独立打分（1-5 分）
-3. 计算 Cohen's Kappa 一致性系数（需 ≥0.6）
-4. 加权平均得到最终得分
-```
-
-#### 2.5.3 对比评估（A/B Testing）
-
-```
-┌──────────────────────────────────────────────────────┐
-│                    对比评估流程                        │
-├──────────────────────────────────────────────────────┤
-│  输入：同一用户问题                                    │
-│     ↓                                                 │
-│  模型A（基座模型）生成回复  │  模型B（微调后）生成回复    │
-│     ↓                      │      ↓                   │
-│  ┌─────────────────────────┴───────────────────────┐  │
-│  │           评估员盲选更好的回复                    │  │
-│  └─────────────────────────────────────────────────┘  │
-│     ↓                                                 │
-│  统计：微调模型胜率 ≥70% 视为有效                      │
-└──────────────────────────────────────────────────────┘
-```
-
-### 2.6 数据增强方法
-
-#### 2.6.1 为什么需要数据增强？
-
-```
-原始数据问题：
-├── 样本量有限（通常 1000-5000 条）
-├── 话题分布不均（某些心理问题样本少）
-├── 表达方式单一（用户提问风格趋同）
-└── 模型容易过拟合、泛化能力差
-
-数据增强目标：
-├── 增加样本多样性
-├── 平衡话题分布
-├── 提高模型鲁棒性
-└── 改善泛化能力
-```
-
-#### 2.6.2 常用数据增强技术
-
-**① 同义词替换（Synonym Replacement）**
-
-```
-原理：随机选择句子中的非停用词，用同义词替换
+FP16 权重 → 归一化 → 量化到 NF4 → 存储
 
 示例：
-原文："我最近感觉很焦虑，睡不好觉"
-增强："我最近感觉很忧虑，睡不好觉"（焦虑→忧虑）
-
-实现：
-├── 使用同义词词典（如 Hownet）
-├── 控制替换比例（通常 10-20% 的词）
-└── 避免替换专业术语（如"认知行为疗法"）
+原始权重: 0.1234 (FP16)
+归一化: 0.1234 / absmax = 0.1234 / 2.5 = 0.04936
+量化: 找到最接近的 NF4 值 (0.0469)
+存储: NF4 index (7) + absmax (2.5)
 ```
 
-**② 回译（Back Translation）**
+#### 2.4.3 双重量化 (Double Quantization)
+
+**问题：** 量化的缩放因子（absmax）本身也需要存储，占用额外显存。
+
+**解决方案：** 对缩放因子再次量化。
 
 ```
-原理：中文→英文→中文，利用翻译差异产生变体
+普通量化：
+  权重 (FP16) → 量化 → NF4 权重
+  每个 block 存储一个 FP16 缩放因子
 
-流程：
-原文："我想改变现在的状态"
-  ↓ 英译
-"I want to change my current situation"
-  ↓ 中译
-增强："我想改变目前的处境"
+双重量化：
+  权重 (FP16) → 第一次量化 → NF4 权重 + FP16 缩放因子
+  FP16 缩放因子 → 第二次量化 → NF8 缩放因子 + FP32 二次缩放因子
 
-优点：
-├── 保持语义不变
-├── 产生自然多样的表达
-└── 适用于各类文本
+显存节省：
+  每个 block 节省: 2 bytes (FP16) - 0.5 bytes (NF8) = 1.5 bytes
+  对于 7B 模型: 节省约 0.5GB
 ```
 
-**③ GPT 辅助改写**
+#### 2.4.4 分页优化器 (Paged Optimizers)
+
+**问题：** 训练过程中显存使用会有峰值，导致 OOM。
+
+**解决方案：** 使用 CPU 内存作为溢出缓冲区。
 
 ```
-原理：利用大模型对原始对话进行风格改写或扩展
+GPU 显存使用模式：
+├── 模型权重 (固定)
+├── LoRA 参数 (固定)
+├── 梯度 (变化)
+├── 优化器状态 (变化，主要峰值来源)
+└── 激活值 (变化)
 
-Prompt 示例：
-"请将以下心理咨询对话改写成不同表达方式，
- 保持专业性和共情，但使用不同的措辞：
-
- 用户：[原始用户输入]
- 咨询师：[原始回复]
-
- 请生成 3 个不同版本的回复。"
-
-优点：
-├── 生成质量高
-├── 可控制改写方向
-└── 能增加话题多样性
+分页优化器：
+  当 GPU 显存不足时 → 将优化器状态移到 CPU 内存
+  当需要更新时 → 移回 GPU
 ```
 
-**④ 角色扮演数据生成**
+### 2.5 显存占用计算
+
+#### 2.5.1 模型显存估算
+
+**基本公式：**
 
 ```
-原理：让 GPT 模拟不同类型的来访者生成对话
-
-Prompt 示例：
-"请扮演一位有以下特征的来访者，生成 5 条咨询问题：
- - 年龄：25岁
- - 困扰：职场压力
- - 性格：内向
- - 表达风格：含蓄"
-
-生成的数据可用于：
-├── 补充稀有人群样本
-├── 增加话题覆盖
-└── 平衡数据分布
+模型显存 ≈ 参数量 × 每参数字节数
 ```
 
-#### 2.6.3 本项目数据增强策略
+| 精度 | 每参数字节数 | 7B 模型显存 | 13B 模型显存 |
+|------|--------------|-------------|--------------|
+| FP32 | 4 bytes | ~28 GB | ~52 GB |
+| FP16/BF16 | 2 bytes | ~14 GB | ~26 GB |
+| INT8 | 1 byte | ~7 GB | ~13 GB |
+| **4-bit (NF4)** | **0.5 bytes** | **~3.5 GB** | **~6.5 GB** |
 
-| 方法 | 使用场景 | 增强比例 | 注意事项 |
-|------|---------|---------|---------|
-| 回译 | 所有数据 | 1:1 | 人工抽检语义一致性 |
-| GPT改写 | 高质量样本 | 1:2 | 控制改写多样性 |
-| 同义词替换 | 长文本样本 | 10% | 避免替换专业术语 |
-| 角色扮演 | 稀有话题 | 按需 | 人工审核质量 |
+#### 2.5.2 训练显存估算
 
-**数据增强后处理**：
-```
-1. 过滤：去除语义偏差大的样本
-2. 去重：避免重复样本
-3. 人工抽检：随机检查 100 条增强样本质量
-4. 平衡：确保各心理问题类型分布均匀
-```
-
-#### 2.6.4 数据增强效果评估
+训练显存包括多个部分：
 
 ```
-评估指标：
-├── 模型泛化能力：在未见过的测试集上表现
-├── 过拟合程度：训练集与验证集 Loss 差距
-├── 话题覆盖：各类型问题的回复质量
-└── 鲁棒性：对异常输入的处理能力
-
-期望效果：
-├── 验证集 PPL 降低 5-10%
-├── 人工评估分数提升 3-5%
-└── 话题分布更均衡
+总显存 = 模型权重 + 梯度 + 优化器状态 + 激活值 + 临时缓存
 ```
+
+**各部分详解：**
+
+| 组件 | 全量微调 | LoRA | QLoRA |
+|------|----------|------|-------|
+| 模型权重 | 14GB (FP16) | 14GB (FP16) | 3.5GB (4-bit) |
+| 梯度 | 14GB | ~0.1GB (LoRA) | ~0.1GB (LoRA) |
+| 优化器状态 | 28GB (Adam) | ~0.2GB | ~0.2GB |
+| 激活值 | 4-8GB | 4-8GB | 4-8GB |
+| **总计** | **~60GB** | **~20GB** | **~6-8GB** |
+
+#### 2.5.3 实际计算示例
+
+以 Qwen2.5-7B 为例：
+
+```python
+# 模型参数
+params = 7_000_000_000  # 7B
+
+# 1. 4-bit 量化模型权重
+model_memory = params * 0.5 / (1024**3)  # ≈ 3.26 GB
+
+# 2. LoRA 参数 (r=16, target_modules=["q_proj", "v_proj"])
+# 假设每个投影矩阵维度为 4096x4096
+lora_params = 2 * 32 * 4096 * 16 * 2  # 2 modules, 2 matrices each
+lora_memory = lora_params * 2 / (1024**3)  # ≈ 0.008 GB
+
+# 3. 优化器状态 (AdamW: 2 states per param)
+optimizer_memory = lora_params * 2 * 2 / (1024**3)  # ≈ 0.016 GB
+
+# 4. 激活值 (取决于 batch_size 和 sequence_length)
+# batch_size=4, seq_len=2048, hidden_dim=4096
+activation_memory = 4 * 2048 * 4096 * 32 / (1024**3)  # ≈ 4 GB (估算)
+
+# 总计
+total = model_memory + lora_memory + optimizer_memory + activation_memory
+# ≈ 7.3 GB
+```
+
+### 2.6 训练技巧与最佳实践
+
+#### 2.6.1 学习率选择
+
+| 微调方法 | 推荐学习率 | 说明 |
+|----------|------------|------|
+| 全量微调 | 1e-5 ~ 5e-5 | 较小学习率避免破坏预训练知识 |
+| LoRA | 1e-4 ~ 5e-4 | 可以使用较大学习率 |
+| QLoRA | 1e-4 ~ 2e-3 | 更大的学习率通常效果更好 |
+
+#### 2.6.2 LoRA Rank 选择
+
+| Rank | 参数量 | 适用场景 |
+|------|--------|----------|
+| r=4 | 最少 | 简单任务、数据少 |
+| r=8 | 较少 | 通用任务 |
+| **r=16** | **中等** | **推荐默认值** |
+| r=32 | 较多 | 复杂任务 |
+| r=64 | 最多 | 需要最大表达能力 |
+
+**经验法则：** 从 r=16 开始，如果效果不好再尝试更大的值。
+
+#### 2.6.3 梯度累积
+
+当显存不足以支持较大 batch_size 时，可以使用梯度累积模拟大批次：
+
+```python
+# 实际 batch_size = 2
+# 梯度累积步数 = 8
+# 等效 batch_size = 2 * 8 = 16
+
+# 每 8 步更新一次参数
+for i, batch in enumerate(dataloader):
+    loss = model(batch)
+    loss = loss / gradient_accumulation_steps
+    loss.backward()
+
+    if (i + 1) % gradient_accumulation_steps == 0:
+        optimizer.step()
+        optimizer.zero_grad()
+```
+
+#### 2.6.4 混合精度训练
+
+使用 FP16/BF16 混合精度可以减少显存占用并加速训练：
+
+```python
+from transformers import TrainingArguments
+
+training_args = TrainingArguments(
+    fp16=True,  # 使用 FP16 混合精度
+    # 或 bf16=True,  # 使用 BF16（推荐，如果硬件支持）
+)
+```
+
+### 2.7 为什么选择 Qwen2.5-7B-Instruct
+
+| 特点 | 说明 |
+|------|------|
+| 中文能力强 | 在中文理解和生成方面表现优秀，C-Eval 等中文榜单领先 |
+| 指令遵循好 | 能够准确理解和执行复杂指令，对话能力强 |
+| 开源免费 | Apache 2.0 协议，可商用 |
+| 社区活跃 | Hugging Face 下载量高，文档完善，生态丰富 |
+| 模型大小适中 | 7B 参数在效果和效率间取得平衡，适合个人和小团队 |
+| 长上下文支持 | 支持 32K 上下文，适合长对话场景 |
+| 工具调用能力 | 支持函数调用，可扩展性强 |
 
 ---
 
 ## 三、技术栈与环境
 
-### 3.1 技术选型
+### 3.1 技术栈
 
-| 类别 | 选型 | 选型理由 |
-|------|------|---------|
-| 基座模型 | Qwen2.5-7B-Instruct | 中文适配优、参数量适中、开源免费 |
-| 微调方案 | QLoRA (4-bit) | 显存占用低、效果有保障 |
-| 训练框架 | Transformers + PEFT | 成熟稳定、文档完善 |
-| 数据处理 | Pandas + JSON | 高效处理表格和结构化数据 |
-| 硬件 | RTX 4090 (24G) | 性价比高、适合单卡训练 |
-| 部署 | FastAPI + Gradio | 高性能 API + 快速 Demo |
+| 类别 | 技术 | 版本要求 | 说明 |
+|------|------|----------|------|
+| 基座模型 | Qwen/Qwen2.5-7B-Instruct | - | 阿里通义千问系列 |
+| 深度学习框架 | PyTorch | >= 2.0.0 | 核心训练框架 |
+| 模型库 | Transformers | >= 4.36.0 | Hugging Face 模型库 |
+| 微调框架 | PEFT | >= 0.7.0 | 参数高效微调 |
+| 量化工具 | BitsAndBytes | >= 0.41.0 | 4-bit 量化支持 |
+| 训练加速 | Accelerate | >= 0.25.0 | 分布式训练支持 |
+| 数据处理 | Pandas, Datasets | >= 2.0.0 | 数据加载和处理 |
+| 可视化界面 | Gradio | >= 4.0.0 | Web 界面 |
 
-### 3.2 环境要求
+### 3.2 硬件要求
 
-| 项目 | 最低要求 | 推荐配置 |
-|------|---------|---------|
-| GPU | RTX 3090 (24G) | RTX 4090 (24G) |
-| CPU | 8核 | 16核 |
-| 内存 | 32GB | 64GB |
-| 磁盘 | 50GB | 100GB SSD |
-| Python | 3.10 | 3.10+ |
-| CUDA | 11.8 | 12.x |
+| 资源 | 最低配置 | 推荐配置 | 说明 |
+|------|----------|----------|------|
+| GPU | RTX 3060 (12GB) | RTX 4090 (24GB) | QLoRA 训练至少需要 6GB 显存 |
+| 内存 | 16GB | 64GB | 数据加载和缓存 |
+| 磁盘 | 50GB SSD | 100GB NVMe | 模型存储和检查点 |
 
-### 3.3 核心依赖
+**不同模型大小的显存需求：**
 
-```txt
-# 深度学习核心
-torch>=2.0.0
-transformers>=4.36.0
-peft>=0.7.0
-accelerate>=0.25.0
-bitsandbytes>=0.41.0
+| 模型 | QLoRA 训练 | LoRA 训练 | 推理 (4-bit) |
+|------|------------|-----------|--------------|
+| 7B | ~8GB | ~20GB | ~4GB |
+| 13B | ~12GB | ~35GB | ~7GB |
+| 34B | ~20GB | ~80GB | ~18GB |
+| 70B | ~40GB | ~160GB | ~38GB |
 
-# 数据处理
-pandas>=2.0.0
-numpy>=1.24.0
-datasets>=2.15.0
+### 3.3 软件环境
 
-# API & UI
-fastapi>=0.104.0
-gradio>=4.0.0
-uvicorn>=0.24.0
-
-# 工具
-tqdm>=4.65.0
-safetensors>=0.4.0
-requests>=2.31.0
 ```
+Python >= 3.10
+CUDA >= 12.0
+cuDNN >= 8.0
+```
+
+### 3.4 推荐平台
+
+| 平台 | 特点 | 价格参考 |
+|------|------|----------|
+| AutoDL | 国内平台，性价比高，适合学习 | RTX 4090 ~2元/小时 |
+| 阿里云 PAI | 企业级，稳定可靠 | 按需计费 |
+| Lambda Labs | 海外平台，A100/H100 资源丰富 | A100 ~0.5美元/小时 |
 
 ---
 
@@ -586,525 +457,653 @@ requests>=2.31.0
 
 ```
 MentalChat/
-├── configs/
-│   └── config.py              # 统一配置文件
-├── data/
-│   ├── raw/                   # 原始数据
-│   │   └── data.csv
-│   └── processed/             # 处理后的数据
-│       ├── train.jsonl
-│       ├── valid.jsonl
-│       └── test.jsonl
-├── /root/autodl-tmp/MentalChat/models/   # 模型目录（AutoDL数据盘）
-│   ├── base/                  # 基座模型（约15GB）
+├── config/                          # 配置模块
+│   ├── __init__.py                  # 模块导出
+│   └── config.py                    # 统一配置文件（唯一配置源）
+│
+├── data/                            # 数据模块
+│   ├── raw/                         # 原始数据
+│   │   └── data.csv                 # CSV 格式原始数据
+│   └── processed/                   # 处理后的数据
+│       ├── train.jsonl              # 训练集 (ChatML 格式)
+│       ├── valid.jsonl              # 验证集
+│       └── test.jsonl               # 测试集
+│
+├── scripts/                         # 核心代码模块
+│   ├── check_environment.py         # 环境检查脚本
+│   ├── download_model.py            # 模型下载脚本
+│   ├── process_data.py              # 数据处理脚本
+│   ├── augmentation.py              # 数据增强模块
+│   ├── train.py                     # 模型训练脚本
+│   ├── evaluate.py                  # 模型评估脚本
+│   ├── inference.py                 # 模型推理脚本
+│   └── verify_qlora.py              # QLoRA 配置验证
+│
+├── output/                          # 输出目录
+│   ├── checkpoints/                 # 训练检查点
+│   │   ├── checkpoint-500/          # 中间检查点
+│   │   └── final/                   # 最终模型
+│   └── logs/                        # 训练日志
+│       └── tensorboard/             # TensorBoard 日志
+│
+├── chat/                            # 对话界面
+│   └── app.py                       # Gradio 应用
+│
+├── /root/autodl-tmp/MentalChat/models/   # 模型目录（AutoDL 数据盘）
+│   ├── base/                        # 基座模型（约 15GB）
 │   │   └── Qwen_Qwen2.5-7B-Instruct/
-│   └── lora/                  # LoRA 权重
-├── scripts/
-│   ├── check_environment.py   # 环境检查
-│   ├── download_model.py      # 模型下载
-│   ├── process_data.py        # 数据处理
-│   ├── train.py               # 训练脚本
-│   ├── evaluate.py            # 评估脚本
-│   ├── inference.py           # 推理脚本
-│   └── verify_qlora.py        # QLoRA 验证
-├── outputs/
-│   ├── checkpoints/           # 训练检查点
-│   └── logs/                  # 训练日志
-├── requirements.txt           # 依赖清单
-└── README.md                  # 本文档
+│   └── lora/                        # LoRA 权重
+│
+├── requirements.txt                 # 依赖清单
+└── README.md                        # 本文档
 ```
+
+### 4.1 目录说明
+
+| 目录 | 用途 | 备注 |
+|------|------|------|
+| `config/` | 存放所有配置参数 | 唯一配置源，避免配置分散 |
+| `data/raw/` | 存放原始 CSV 数据 | 需要按规范格式准备 |
+| `data/processed/` | 存放处理后的 JSONL 数据 | 由脚本自动生成 |
+| `scripts/` | 所有训练相关代码 | 核心功能实现 |
+| `output/` | 训练输出和日志 | 自动创建，可配置 |
+| `chat/` | Gradio 对话界面 | 用于模型演示 |
 
 ---
 
 ## 五、快速开始
 
-### 5.1 环境搭建（AutoDL 服务器）
+### 5.1 环境搭建
 
 ```bash
-# 1. 进入项目目录
-cd /root/MentalChat
+# 1. 克隆项目（或在 AutoDL 上上传）
+cd /root
+git clone <repository-url>
+cd MentalChat
 
-# 2. 配置 conda 镜像（清华源）
-cat > ~/.condarc << 'EOF'
-channels:
-  - defaults
-show_channel_urls: true
-default_channels:
-  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main
-EOF
-
-# 3. 初始化 conda
-conda init bash && source ~/.bashrc
-
-# 4. 创建虚拟环境
+# 2. 创建虚拟环境
 conda create -n mental_chat python=3.10 -y
 conda activate mental_chat
 
-# 5. 安装 PyTorch（清华镜像）
-pip install torch torchvision -i https://pypi.tuna.tsinghua.edu.cn/simple
+# 3. 安装 PyTorch（根据 CUDA 版本选择）
+# CUDA 12.1
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 
-# 6. 安装依赖（清华镜像）
-pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+# CUDA 11.8
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 
-# 7. 验证环境
+# 4. 安装其他依赖
+pip install -r requirements.txt
+
+# 5. 检查环境
 python scripts/check_environment.py
 ```
 
-### 5.2 下载模型
-
-**模型下载路径说明**：
-
-| 项目 | 说明 |
-|------|------|
-| 基座模型名称 | `Qwen/Qwen2.5-7B-Instruct` |
-| 本地保存路径 | `/root/autodl-tmp/MentalChat/models/base/Qwen_Qwen2.5-7B-Instruct/` |
-| 模型精度 | **FP16/BF16 混合精度**（HuggingFace 默认格式） |
-| 模型大小 | 约 **15GB**（7.6B 参数 × 2 bytes = 15.2GB） |
-
-> **为什么是 15GB？**
-> HuggingFace 上的模型默认以 FP16/BF16 半精度存储，每个参数占 2 字节。
-> 7.6B 参数 × 2 bytes ≈ 15.2 GB，加上配置文件和分词器，总共约 15GB。
-
-**下载命令**：
+### 5.2 数据准备
 
 ```bash
-# 设置 HuggingFace 镜像（国内必须）
-export HF_ENDPOINT=https://hf-mirror.com
+# 1. 将原始数据放入 data/raw/ 目录
+# 数据格式要求：CSV 文件，包含 Conversation ID, Turn ID, Input, Output 字段
 
-# 方式1：使用脚本下载（推荐）
-python scripts/download_model.py --mirror
-```
-
-**方式2：使用 huggingface-cli 下载**
-```bash
-# 安装 huggingface_hub
-pip install huggingface_hub
-
-# 设置镜像
-export HF_ENDPOINT=https://hf-mirror.com
-
-# 下载模型到指定目录
-huggingface-cli download \
-  Qwen/Qwen2.5-7B-Instruct \
-  --local-dir /root/autodl-tmp/MentalChat/models/base/Qwen_Qwen2.5-7B-Instruct \
-  --local-dir-use-symlinks False
-```
-
-**方式3：使用 ModelScope 下载（国内更快）**
-```bash
-# 安装 modelscope
-pip install modelscope
-
-# 下载模型
-python -c "
-from modelscope import snapshot_download
-snapshot_download(
-    'Qwen/Qwen2.5-7B-Instruct',
-    cache_dir='/root/autodl-tmp/MentalChat/models/base'
-)
-"
-```
-
-> **说明**：所有方式都会将模型保存到 `/root/autodl-tmp/MentalChat/models/base/`（AutoDL数据盘），避免占用系统盘空间。
-
-**后台下载（断开SSH后继续下载）**：
-
-模型约15GB，下载需要较长时间。以下方法可以让你关闭本地终端后远程主机继续下载：
-
-**方法一：使用 nohup（推荐）**
-```bash
-# 后台运行下载脚本，日志保存到文件
-nohup python scripts/download_model.py --mirror > download.log 2>&1 &
-
-# 查看下载进度
-tail -f download.log
-
-# 查看进程是否在运行
-ps aux | grep download_model
-```
-
-**方法二：使用 tmux**
-```bash
-# 创建新会话
-tmux new -s download
-
-# 在 tmux 会话中运行下载
-conda activate mental_chat
-export HF_ENDPOINT=https://hf-mirror.com
-python scripts/download_model.py --mirror
-
-# 断开会话（保持后台运行）：Ctrl+B 然后按 D
-# 重新连接：tmux attach -t download
-# 查看所有会话：tmux ls
-```
-
-**方法三：使用 screen**
-```bash
-# 创建新窗口
-screen -S download
-
-# 在 screen 窗口中运行下载
-conda activate mental_chat
-export HF_ENDPOINT=https://hf-mirror.com
-python scripts/download_model.py --mirror
-
-# 断开窗口（保持后台运行）：Ctrl+A 然后按 D
-# 重新连接：screen -r download
-# 查看所有窗口：screen -ls
-```
-
-**下载完成后验证**：
-```bash
-# 验证模型是否下载成功
-python scripts/download_model.py --verify-only /root/autodl-tmp/MentalChat/models/base/Qwen_Qwen2.5-7B-Instruct
-```
-
-**下载后的目录结构**：
-
-```
-/root/autodl-tmp/MentalChat/models/base/Qwen_Qwen2.5-7B-Instruct/
-├── config.json              # 模型配置
-├── generation_config.json   # 生成配置
-├── model-00001-of-00004.safetensors  # 模型权重（分片）
-├── model-00002-of-00004.safetensors
-├── model-00003-of-00004.safetensors
-├── model-00004-of-00004.safetensors
-├── model.safetensors.index.json
-├── tokenizer.json           # 分词器
-├── tokenizer_config.json
-├── special_tokens_map.json
-└── vocab.json
-```
-
-### 5.3 处理数据
-
-```bash
-# 数据探查
+# 2. 查看数据探查结果
 python scripts/process_data.py --explore-only
 
-# 数据处理（多轮对话格式）
+# 3. 处理数据（多轮对话模式）
 python scripts/process_data.py --mode multi
 
-# 启用 AI 数据增强（可选）
-export DASHSCOPE_API_KEY="your-api-key"
+# 4. （可选）启用 AI 数据增强
 python scripts/process_data.py --mode multi --augment --augment-ratio 0.3
 ```
 
-### 5.4 验证 QLoRA
+### 5.3 模型下载
 
 ```bash
-python scripts/verify_qlora.py
+# 下载基座模型到本地
+python scripts/download_model.py
+
+# 或使用镜像加速
+python scripts/download_model.py --use-mirror
 ```
 
-### 5.5 启动训练
+### 5.4 开始训练
 
 ```bash
-# 使用 tmux 保持长时任务
-tmux new -s finetune
-conda activate mental_chat
+# 使用默认配置训练
 python scripts/train.py
 
-# 断开会话：Ctrl+B 然后按 D
-# 重新连接：tmux attach -t finetune
+# 自定义参数训练
+python scripts/train.py --epochs 5 --learning-rate 1e-4 --batch-size 2
+
+# 从检查点恢复训练
+python scripts/train.py --resume-from output/checkpoints/checkpoint-1000
+```
+
+### 5.5 模型评估与推理
+
+```bash
+# 评估模型
+python scripts/evaluate.py --lora-path output/checkpoints/final
+
+# 命令行交互式推理
+python scripts/inference.py --lora-path output/checkpoints/final --interactive
+
+# 单次输入推理
+python scripts/inference.py --lora-path output/checkpoints/final --input "我最近感觉很焦虑"
+
+# 启动 Gradio 对话界面
+python chat/app.py
+# 访问 http://localhost:7860
 ```
 
 ---
 
 ## 六、详细执行步骤
 
-### 6.1 阶段一：环境搭建与验证（1天）
+### 6.1 数据准备
 
-| 任务 | 命令 | 预期结果 |
-|------|------|---------|
-| 硬件确认 | `nvidia-smi` | 显示 GPU 信息 |
-| Python 环境 | `conda create -n mental_chat python=3.10` | 环境创建成功 |
-| 依赖安装 | `pip install -r requirements.txt` | 无报错 |
-| 环境验证 | `python scripts/check_environment.py` | 所有检查通过 |
-| 模型下载 | `python scripts/download_model.py --mirror` | 保存到 `/root/autodl-tmp/MentalChat/models/base/Qwen_Qwen2.5-7B-Instruct/` |
-| QLoRA 验证 | `python scripts/verify_qlora.py` | 验证通过（显存约 6GB） |
+#### 数据格式要求
 
-### 6.2 阶段二：数据处理（1-2天）
+原始数据应为 CSV 格式，包含以下字段：
 
-| 任务 | 命令 | 产出 |
-|------|------|------|
-| 数据探查 | `python scripts/process_data.py --explore-only` | 数据统计报告 |
-| 数据清洗 | 内置于 process_data.py | 清洗后的数据 |
-| 格式转换 | `python scripts/process_data.py --mode multi` | ChatML 格式数据 |
-| 数据集划分 | 内置于 process_data.py | train/valid/test.jsonl |
+| 字段名 | 说明 | 示例 |
+|--------|------|------|
+| Conversation ID | 对话唯一标识 | conv_001 |
+| Turn ID | 对话轮次 | 1, 2, 3... |
+| Input | 用户输入 | "最近工作压力很大" |
+| Output | 咨询师回复 | "我理解你的感受..." |
 
-**数据增强（可选）**：
+#### 数据处理流程
 
 ```bash
-# 配置 API Key
-export DASHSCOPE_API_KEY="sk-xxx"
+# 单轮对话模式（每条数据独立）
+python scripts/process_data.py --mode single
 
-# 启用增强
-python scripts/process_data.py --mode multi --augment --augment-ratio 0.3
+# 多轮对话模式（保持对话连贯性）
+python scripts/process_data.py --mode multi
 ```
 
-| 增强策略 | 说明 | 效果 |
-|---------|------|------|
-| paraphrase | 同义改写用户输入 | 增加输入多样性 |
-| enhance | 增强回复质量 | 提升回复专业性 |
-| clean | 清理和标准化 | 修复语法错误 |
+处理后的数据格式（ChatML）：
 
-### 6.3 阶段三：模型微调训练（2天）
+```json
+{
+  "messages": [
+    {"role": "system", "content": "你是一名专业的心理咨询客服..."},
+    {"role": "user", "content": "我最近感觉很焦虑"},
+    {"role": "assistant", "content": "我理解你现在的感受..."}
+  ]
+}
+```
 
-**训练配置**：
+### 6.2 训练配置详解
+
+在 `config/config.py` 中调整训练参数。以下是所有参数的详细说明：
+
+#### 6.2.1 模型配置 (ModelConfig)
 
 ```python
-# LoRA 配置
-r = 16
-lora_alpha = 32
-target_modules = ["q_proj", "v_proj"]
-lora_dropout = 0.05
+@dataclass
+class ModelConfig:
+    # 基座模型名称（Hugging Face 模型 ID）
+    base_model_name: str = "Qwen/Qwen2.5-7B-Instruct"
 
-# QLoRA 配置
-load_in_4bit = True
-bnb_4bit_quant_type = "nf4"
-bnb_4bit_compute_dtype = "float16"
+    # 基座模型本地路径（下载后的存放位置）
+    base_model_path: str = "/root/autodl-tmp/MentalChat/models/base/Qwen_Qwen2.5-7B-Instruct"
 
-# 训练配置
-num_train_epochs = 3
-per_device_train_batch_size = 4
-gradient_accumulation_steps = 4
-learning_rate = 2e-4
+    # 是否使用本地模型（False 则从 HF 下载）
+    use_local_model: bool = True
+
+    # 信任远程代码（某些模型需要）
+    trust_remote_code: bool = True
 ```
 
-**训练监控**：
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `base_model_name` | str | "Qwen/Qwen2.5-7B-Instruct" | Hugging Face 上的模型标识符 |
+| `base_model_path` | str | "/root/autodl-tmp/..." | 模型本地存储路径 |
+| `use_local_model` | bool | True | 是否优先使用本地模型 |
+| `trust_remote_code` | bool | True | 是否执行模型仓库中的代码 |
 
-```bash
-# 实时监控 GPU
-watch -n 1 nvidia-smi
+#### 6.2.2 LoRA 配置 (LoRAConfig)
 
-# 查看训练日志
-tail -f outputs/logs/training.log
+```python
+@dataclass
+class LoRAConfig:
+    # LoRA 秩（rank），核心参数
+    r: int = 16
 
-# TensorBoard（如果启用）
-tensorboard --logdir outputs/logs
+    # LoRA 缩放因子
+    lora_alpha: int = 32
+
+    # 目标模块列表
+    target_modules: List[str] = field(default_factory=lambda: ["q_proj", "v_proj"])
+
+    # Dropout 概率
+    lora_dropout: float = 0.05
+
+    # 偏置项处理方式
+    bias: str = "none"
+
+    # 任务类型
+    task_type: str = "CAUSAL_LM"
 ```
 
-**训练调优参考**：
+| 参数 | 类型 | 默认值 | 详细说明 |
+|------|------|--------|----------|
+| `r` | int | 16 | **LoRA 秩**，决定低秩矩阵的维度。r 越大，可训练参数越多，表达能力越强，但显存占用也越高。<br>• r=4-8：简单任务，数据量小<br>• r=16-32：推荐默认值，平衡效果和效率<br>• r=64+：复杂任务，需要更强的表达能力 |
+| `lora_alpha` | int | 32 | **缩放因子**，控制 LoRA 适配器对原始权重的贡献程度。实际缩放系数为 `alpha/r`。通常设置为 `2r`，即缩放系数为 2。 |
+| `target_modules` | List[str] | ["q_proj", "v_proj"] | **目标模块**，指定在哪些层应用 LoRA。<br>• 最小：["q_proj", "v_proj"]<br>• 推荐：["q_proj", "v_proj", "k_proj", "o_proj"]<br>• 完整：["all_linear_layers"] |
+| `lora_dropout` | float | 0.05 | **Dropout 概率**，防止过拟合。通常 0.05-0.1 效果较好。数据量大时可设为 0。 |
+| `bias` | str | "none" | **偏置项处理**。<br>• "none"：不训练偏置（推荐）<br>• "all"：训练所有偏置<br>• "lora_only"：只训练 LoRA 层偏置 |
+| `task_type` | str | "CAUSAL_LM" | **任务类型**。因果语言模型用 "CAUSAL_LM"，序列到序列用 "SEQ_2_SEQ_LM"。 |
 
-| 问题 | 可能原因 | 解决方案 |
-|------|---------|---------|
-| Loss 不下降 | 学习率过低 | 提高到 5e-4 |
-| Loss 震荡 | 学习率过高 | 降低到 1e-4 |
-| 验证 Loss 高 | 过拟合 | 减少 epoch、增加 dropout |
-| 显存溢出 | batch_size 过大 | 减小到 2 |
+**LoRA 参数量计算**：
 
-### 6.4 阶段四：模型评估（1天）
+```
+每个目标模块的 LoRA 参数量 = 2 × hidden_dim × r
+（2 是因为有两个矩阵 A 和 B）
 
-**自动化评估**：
+总参数量 = len(target_modules) × num_layers × 2 × hidden_dim × r
 
-```bash
-python scripts/evaluate.py --model-path outputs/checkpoints/best
+示例（Qwen2.5-7B）：
+- hidden_dim = 3584
+- num_layers = 28
+- target_modules = ["q_proj", "v_proj"] (2个)
+- r = 16
+
+总参数量 = 2 × 28 × 2 × 3584 × 16 ≈ 6.4M 参数
 ```
 
-**人工评估维度**：
+#### 6.2.3 量化配置 (QuantizationConfig)
 
-| 维度 | 权重 | 目标值 |
-|------|------|-------|
-| 专业度 | 30% | ≥90% |
-| 共情能力 | 30% | ≥90% |
-| 格式规范 | 20% | ≥95% |
-| 语言流畅 | 10% | ≥95% |
-| 安全性 | 10% | 100% |
+```python
+@dataclass
+class QuantizationConfig:
+    # 是否使用 4-bit 量化
+    load_in_4bit: bool = True
 
-### 6.5 阶段五：部署与演示（1天）
+    # 4-bit 量化类型
+    bnb_4bit_quant_type: str = "nf4"
 
-**启动 API 服务**：
+    # 是否使用双重量化
+    bnb_4bit_use_double_quant: bool = True
 
-```bash
-python scripts/inference.py --mode api --port 8000
+    # 计算数据类型
+    bnb_4bit_compute_dtype: str = "float16"
 ```
 
-**启动 Demo 界面**：
+| 参数 | 类型 | 默认值 | 详细说明 |
+|------|------|--------|----------|
+| `load_in_4bit` | bool | True | **是否启用 4-bit 量化**。启用后模型权重以 4-bit 存储，大幅降低显存占用。 |
+| `bnb_4bit_quant_type` | str | "nf4" | **量化数据类型**。<br>• "nf4"：NormalFloat4，信息论最优，适合正态分布权重（推荐）<br>• "fp4"：Float4，通用浮点格式 |
+| `bnb_4bit_use_double_quant` | bool | True | **是否启用双重量化**。对量化常数再次量化，额外节省约 0.5GB 显存（7B 模型）。 |
+| `bnb_4bit_compute_dtype` | str | "float16" | **计算精度**。前向和反向传播时使用的精度。<br>• "float16"：平衡精度和速度<br>• "bfloat16"：更大动态范围（推荐 A100/H100）<br>• "float32"：最高精度，显存占用大 |
+
+#### 6.2.4 训练配置 (TrainingConfig)
+
+```python
+@dataclass
+class TrainingConfig:
+    # ==================== 基础训练参数 ====================
+    # 训练轮数
+    num_train_epochs: int = 3
+
+    # 每设备批次大小
+    per_device_train_batch_size: int = 4
+
+    # 每设备评估批次大小
+    per_device_eval_batch_size: int = 4
+
+    # 梯度累积步数
+    gradient_accumulation_steps: int = 4
+
+    # 学习率
+    learning_rate: float = 2e-4
+
+    # ==================== 优化器参数 ====================
+    # 优化器类型
+    optim: str = "paged_adamw_8bit"
+
+    # 权重衰减
+    weight_decay: float = 0.01
+
+    # 最大梯度范数
+    max_grad_norm: float = 1.0
+
+    # ==================== 学习率调度 ====================
+    # 学习率调度器类型
+    lr_scheduler_type: str = "cosine"
+
+    # 预热步数占比
+    warmup_ratio: float = 0.03
+
+    # 预热步数（优先于 warmup_ratio）
+    warmup_steps: int = 0
+
+    # ==================== 精度与显存 ====================
+    # 混合精度训练
+    fp16: bool = False
+    bf16: bool = True
+
+    # 梯度检查点
+    gradient_checkpointing: bool = True
+
+    # ==================== 日志与保存 ====================
+    # 日志记录步数
+    logging_steps: int = 10
+
+    # 评估步数
+    eval_steps: int = 100
+
+    # 模型保存步数
+    save_steps: int = 500
+
+    # 保存模型数量上限
+    save_total_limit: int = 3
+
+    # ==================== 序列长度 ====================
+    # 最大序列长度
+    max_total_length: int = 2048
+```
+
+**详细参数说明：**
+
+| 参数 | 类型 | 默认值 | 详细说明 |
+|------|------|--------|----------|
+| **基础训练参数** ||||
+| `num_train_epochs` | int | 3 | **训练轮数**。完整遍历训练数据的次数。<br>• 数据量大：1-3 轮<br>• 数据量小：3-5 轮<br>• 监控验证集 loss，避免过拟合 |
+| `per_device_train_batch_size` | int | 4 | **每 GPU 批次大小**。每次前向传播处理的样本数。<br>• 显存受限时减小此值<br>• 配合梯度累积使用 |
+| `gradient_accumulation_steps` | int | 4 | **梯度累积步数**。累积多个小批次的梯度后更新参数。<br>• 等效批次 = batch_size × gradient_accumulation_steps<br>• 例：batch_size=2, accumulation=8 → 等效 batch_size=16 |
+| `learning_rate` | float | 2e-4 | **学习率**。控制参数更新步长。<br>• QLoRA 推荐：1e-4 ~ 5e-4<br>• LoRA 推荐：1e-4 ~ 3e-4<br>• 全量微调：1e-5 ~ 5e-5 |
+| **优化器参数** ||||
+| `optim` | str | "paged_adamw_8bit" | **优化器类型**。<br>• "paged_adamw_8bit"：分页 8-bit Adam，省显存（推荐）<br>• "adamw_torch"：标准 AdamW<br>• "adafactor"：更省显存，但效果可能稍差 |
+| `weight_decay` | float | 0.01 | **权重衰减**。L2 正则化系数，防止过拟合。<br>• 通常 0.01-0.1<br>• 数据量大时可增大 |
+| `max_grad_norm` | float | 1.0 | **梯度裁剪**。防止梯度爆炸。<br>• 通常 1.0<br>• 训练不稳定时可减小到 0.3 |
+| **学习率调度** ||||
+| `lr_scheduler_type` | str | "cosine" | **学习率调度器**。<br>• "cosine"：余弦退火，平滑降低（推荐）<br>• "linear"：线性降低<br>• "constant"：恒定不变<br>• "polynomial"：多项式衰减 |
+| `warmup_ratio` | float | 0.03 | **预热比例**。训练开始时学习率从 0 逐渐增加到设定值。<br>• 通常 0.03-0.1<br>• 有助于稳定训练初期 |
+| **精度与显存** ||||
+| `fp16` | bool | False | **FP16 混合精度**。使用 16-bit 浮点数计算。<br>• 省显存，加速训练<br>• 可能存在精度损失 |
+| `bf16` | bool | True | **BF16 混合精度**。使用 Brain Float 16。<br>• 比 FP16 更大动态范围<br>• 推荐 A100/H100/RTX 3090+ 使用<br>• fp16 和 bf16 通常只开一个 |
+| `gradient_checkpointing` | bool | True | **梯度检查点**。以计算换显存。<br>• 重计算激活值而非存储<br>• 节省 30-50% 显存<br>• 训练速度降低 20-30% |
+| **日志与保存** ||||
+| `logging_steps` | int | 10 | **日志记录频率**。每隔多少步记录一次 loss。 |
+| `eval_steps` | int | 100 | **评估频率**。每隔多少步在验证集上评估。 |
+| `save_steps` | int | 500 | **保存频率**。每隔多少步保存检查点。 |
+| `save_total_limit` | int | 3 | **检查点数量上限**。只保留最近的 N 个检查点，节省磁盘空间。 |
+| **序列长度** ||||
+| `max_total_length` | int | 2048 | **最大序列长度**。输入 + 输出的总 token 数。<br>• 影响显存占用<br>• 根据对话长度调整<br>• 过长会截断 |
+
+#### 6.2.5 推荐配置组合
+
+**配置一：最省显存（单卡 12GB）**
+```python
+per_device_train_batch_size = 1
+gradient_accumulation_steps = 16
+gradient_checkpointing = True
+max_total_length = 1024
+optim = "paged_adamw_8bit"
+```
+
+**配置二：平衡配置（单卡 24GB）**
+```python
+per_device_train_batch_size = 2
+gradient_accumulation_steps = 8
+gradient_checkpointing = True
+max_total_length = 2048
+optim = "paged_adamw_8bit"
+```
+
+**配置三：性能优先（多卡 80GB）**
+```python
+per_device_train_batch_size = 8
+gradient_accumulation_steps = 2
+gradient_checkpointing = False
+max_total_length = 4096
+optim = "adamw_torch"
+```
+
+### 6.3 训练过程监控
 
 ```bash
-python scripts/inference.py --mode gradio --port 7860
+# 启动 TensorBoard
+tensorboard --logdir output/logs --port 6006
+
+# 访问 http://localhost:6006 查看训练曲线
+```
+
+**关注指标：**
+
+- **Loss**：训练损失，应持续下降
+- **Learning Rate**：学习率变化曲线
+- **Eval Loss**：验证损失，用于判断过拟合
+
+**判断训练状态：**
+
+| 现象 | 可能原因 | 解决方案 |
+|------|----------|----------|
+| Loss 持续下降，Eval Loss 上升 | 过拟合 | 减少训练轮数、增加数据、降低 LoRA rank |
+| Loss 不下降 | 学习率太小或数据问题 | 增大学习率、检查数据格式 |
+| Loss 震荡剧烈 | 学习率太大 | 降低学习率、增加 batch size |
+| Loss 变 NaN | 梯度爆炸 | 降低学习率、启用梯度裁剪 |
+
+### 6.4 模型评估
+
+```bash
+# 运行评估脚本
+python scripts/evaluate.py --lora-path output/checkpoints/final
+
+# 查看评估结果
+# - BLEU 分数：衡量生成文本与参考文本的相似度
+# - ROUGE 分数：衡量召回率
+# - 人工评估：回复的专业性和共情度
 ```
 
 ---
 
-## 七、常见问题
+## 七、数据增强说明
 
-### 7.1 环境问题
+### 7.1 增强策略
 
-**Q: conda activate 报错？**
-```bash
-conda init bash
-source ~/.bashrc
-# 或使用替代命令
-source activate mental_chat
+本项目的数据增强模块（`scripts/augmentation.py`）提供以下策略：
+
+| 策略 | 说明 | 效果 |
+|------|------|------|
+| **paraphrase** | 同义改写用户输入 | 增加输入多样性 |
+| **enhance** | 优化咨询师回复 | 提升回复质量 |
+| **scenario** | 场景扩展（如青少年、职场等） | 增加场景覆盖 |
+| **clean** | 清理和标准化回复 | 提升数据质量 |
+
+### 7.2 使用方法
+
+```python
+from scripts.augmentation import DataAugmenter, create_augmenter
+
+# 方式一：使用便捷函数
+augmenter = create_augmenter(
+    api_key="your-dashscope-api-key",  # 或设置环境变量 DASHSCOPE_API_KEY
+    augment_ratio=0.3,
+    strategies=["paraphrase", "enhance"]
+)
+
+# 方式二：直接创建
+from scripts.augmentation import DataAugmenter
+augmenter = DataAugmenter(
+    api_key="your-api-key",
+    model="qwen-plus",
+    augment_ratio=0.3
+)
+
+# 执行增强
+augmented_data = augmenter.augment(
+    data,
+    strategies=["paraphrase", "enhance"],
+    verbose=True
+)
+
+# 查看统计信息
+print(augmenter.get_stats())
 ```
 
-**Q: CUDA 不可用？**
-```bash
-# 检查 PyTorch CUDA
-python -c "import torch; print(torch.cuda.is_available())"
-
-# 重新安装对应版本
-pip install torch torchvision --index-url https://mirrors.aliyun.com/pytorch-wheels/cu121
-```
-
-**Q: bitsandbytes 安装失败？**
-```bash
-# 需要在 Linux 环境安装
-pip install bitsandbytes -i https://pypi.tuna.tsinghua.edu.cn/simple
-```
-
-**Q: 磁盘空间不足？**
-
-下载模型前先清理各类缓存，通常可释放 10-30GB 空间：
+### 7.3 命令行使用
 
 ```bash
-# ========== 清理 pip 缓存 ==========
-# 查看缓存大小
-pip cache info
+# 在数据处理时启用增强
+python scripts/process_data.py --mode multi --augment --augment-ratio 0.3
 
-# 清理所有 pip 缓存（可释放数GB）
-pip cache purge
-
-# ========== 清理 conda 缓存 ==========
-# 查看缓存大小
-conda clean --dry-run --all
-
-# 清理所有 conda 缓存（包、tar包、索引缓存）
-conda clean --all -y
-
-# ========== 清理 HuggingFace 缓存 ==========
-# HF 缓存通常在 ~/.cache/huggingface/
-du -sh ~/.cache/huggingface/  # 查看大小
-rm -rf ~/.cache/huggingface/  # 清理（如果之前下载失败会有残留）
-
-# ========== 清理系统缓存 ==========
-# 清理 apt 缓存（Ubuntu/Debian）
-sudo apt clean
-sudo apt autoremove -y
-
-# 清理日志文件
-sudo journalctl --vacuum-size=100M
-
-# 清理 tmp 目录
-sudo rm -rf /tmp/*
-
-# ========== 查看磁盘使用情况 ==========
-# 查看各目录占用
-du -sh /* 2>/dev/null | sort -hr | head -20
-
-# 查看当前目录占用
-du -sh * | sort -hr
-
-# ========== 大文件查找 ==========
-# 查找大于 100MB 的文件
-find / -type f -size +100M 2>/dev/null | head -20
+# 指定增强策略
+python scripts/process_data.py --mode multi --augment --strategies paraphrase,enhance
 ```
 
-**预计释放空间**：
+### 7.4 API 配置
 
-| 缓存类型 | 通常大小 | 清理命令 |
-|---------|---------|---------|
-| pip 缓存 | 2-10 GB | `pip cache purge` |
-| conda 缓存 | 3-15 GB | `conda clean --all -y` |
-| HF 缓存 | 0-30 GB | `rm -rf ~/.cache/huggingface/` |
-| apt 缓存 | 1-5 GB | `sudo apt clean` |
-| 日志文件 | 0.5-2 GB | `sudo journalctl --vacuum-size=100M` |
+数据增强使用阿里云 DashScope API，需要配置：
 
-### 7.2 训练问题
+```bash
+# 设置环境变量
+export DASHSCOPE_API_KEY="your-api-key"
 
-**Q: 显存溢出 (OOM)？**
-- 减小 `per_device_train_batch_size` 到 2
-- 增加 `gradient_accumulation_steps` 到 8
-- 启用更激进的量化
+# 或在代码中传入
+augmenter = DataAugmenter(api_key="your-api-key")
+```
 
-**Q: Loss 不下降？**
-- 检查学习率（尝试 1e-4 到 5e-4）
-- 检查数据格式是否正确
-- 增加训练轮数
-
-**Q: 训练很慢？**
-- 确认使用 fp16 混合精度
-- 检查数据加载是否有瓶颈
-- 使用更快的存储（SSD）
-
-### 7.3 推理问题
-
-**Q: 回复质量差？**
-- 检查是否加载了 LoRA 权重
-- 调整 temperature（0.7-0.9）
-- 调整 top_p（0.8-0.95）
-
-**Q: 推理速度慢？**
-- 启用 4-bit 量化推理
-- 考虑使用 vLLM 框架
-- 实现批处理推理
+获取 API Key：访问 [阿里云 DashScope](https://dashscope.console.aliyun.com/) 注册并创建 API Key。
 
 ---
 
-## 八、面试要点
+## 八、常见问题
 
-### 8.1 项目背景类
+### 8.1 显存不足 (OOM)
 
-**Q: 为什么做这个项目？**
-> 通用大模型在心理咨询场景存在专业度不足、共情能力弱、格式不统一等问题，通过微调可以让模型更好地适配这一垂直场景。
+**问题**：训练时出现 `CUDA out of memory` 错误
 
-**Q: 为什么选择 LoRA/QLoRA 而非全量微调？**
-> 全量微调显存占用高（80G+）、易过拟合、成本高。QLoRA 通过 4-bit 量化和低秩适配，将显存降至 11G，单卡即可训练，且精度损失可控（<5%）。
+**解决方案**：
 
-### 8.2 技术细节类
+1. **减小批次大小**：
+   ```bash
+   python scripts/train.py --batch-size 1
+   ```
 
-**Q: LoRA 的 r=16 是如何确定的？**
-> 通过实验验证：r=8 效果不足（专业度仅 85%），r=32 显存过高（15G+），r=16 是效果与成本的最优平衡点。
+2. **减小序列长度**：在 `config/config.py` 中设置：
+   ```python
+   max_total_length: int = 1024
+   ```
 
-**Q: 为什么选择 q_proj 和 v_proj？**
-> 这两个模块是注意力层的核心，直接影响模型对语义和情绪的理解。微调它们能快速适配场景，同时控制可训练参数。
+3. **启用梯度检查点**：在训练脚本中添加：
+   ```python
+   training_args.gradient_checkpointing = True
+   ```
 
-**Q: QLoRA 和 LoRA 的区别？**
-> 核心区别是基座模型精度：LoRA 是 32-bit，QLoRA 是 4-bit。显存从 20G 降至 11G，精度损失仅 2%。
+4. **使用 CPU offload**：
+   ```python
+   training_args.optim = "paged_adamw_8bit"
+   ```
 
-### 8.3 工程实践类
+### 8.2 训练速度慢
 
-**Q: 如何保证数据质量？**
-> 通过去重、纠错、敏感词过滤、格式标准化等多步处理，并进行人工抽样检查（100 条样本）。
+**问题**：训练速度太慢，一个 epoch 需要很长时间
 
-**Q: 如何评估模型效果？**
-> 自动评估（Perplexity、BLEU）+ 人工评估（专业度、共情能力、格式规范）+ 对比评估（与基座模型对比）。
+**解决方案**：
 
-**Q: 如何优化推理性能？**
-> 4-bit 量化推理、Flash Attention、vLLM 框架、批处理推理，可将延迟控制在 100ms 以内。
+1. **确保使用 4-bit 量化**（默认启用）
+2. **增大梯度累积**：
+   ```python
+   gradient_accumulation_steps: int = 8
+   ```
+3. **使用更快的优化器**：
+   ```python
+   optim: str = "paged_adamw_8bit"
+   ```
+4. **减少日志频率**：
+   ```python
+   logging_steps: int = 50
+   save_steps: int = 1000
+   ```
+
+### 8.3 模型效果不佳
+
+**问题**：微调后模型效果没有明显提升
+
+**解决方案**：
+
+1. **检查数据质量**：
+   ```bash
+   python scripts/process_data.py --explore-only
+   ```
+
+2. **增加训练数据量**：使用数据增强扩充数据
+
+3. **调整超参数**：
+   - 增加训练轮次：`--epochs 5`
+   - 调整学习率：`--learning-rate 1e-4`
+   - 增大 LoRA rank：`r = 32`
+
+4. **检查 System Prompt**：确保系统提示词清晰明确
+
+### 8.4 模型加载失败
+
+**问题**：加载模型时报错
+
+**解决方案**：
+
+1. **检查模型路径**：确保 `base_model_path` 正确
+2. **检查网络连接**：如使用远程模型，确保能访问 Hugging Face
+3. **使用镜像**：
+   ```bash
+   export HF_ENDPOINT=https://hf-mirror.com
+   ```
+
+### 8.5 数据增强 API 调用失败
+
+**问题**：数据增强时 API 调用失败
+
+**解决方案**：
+
+1. **检查 API Key**：确保 `DASHSCOPE_API_KEY` 正确设置
+2. **检查账户余额**：确保 API 有足够的调用额度
+3. **检查网络**：确保能访问阿里云 API
+4. **降低并发**：减少同时请求的数量
 
 ---
 
 ## 附录
 
-### A. 国内镜像源
+### A. 依赖清单
 
-| 类型 | 镜像地址 |
-|------|---------|
-| 清华 PyPI | https://pypi.tuna.tsinghua.edu.cn/simple |
-| 阿里云 PyPI | https://mirrors.aliyun.com/pypi/simple/ |
-| 阿里云 PyTorch | https://mirrors.aliyun.com/pytorch-wheels/ |
-| HF 镜像 | https://hf-mirror.com |
+```txt
+# 核心深度学习框架
+torch>=2.0.0
+torchvision>=0.15.0
 
-### B. 推荐阅读
+# Hugging Face 核心库
+transformers>=4.36.0
+peft>=0.7.0
+accelerate>=0.25.0
+datasets>=2.15.0
+bitsandbytes>=0.41.0
+safetensors>=0.4.0
+
+# 数据处理
+pandas>=2.0.0
+numpy>=1.24.0
+
+# 可视化
+gradio>=4.0.0
+tensorboard>=2.15.0
+
+# 工具库
+tqdm>=4.66.0
+requests>=2.31.0
+```
+
+### B. 参考资料
 
 - [QLoRA 论文](https://arxiv.org/abs/2305.14314)
 - [LoRA 论文](https://arxiv.org/abs/2106.09685)
+- [Qwen2.5 文档](https://github.com/QwenLM/Qwen2.5)
 - [PEFT 文档](https://huggingface.co/docs/peft)
 - [Transformers 文档](https://huggingface.co/docs/transformers)
-
-### C. 项目时间规划
-
-```
-第1天：环境搭建与验证
-第2-3天：数据处理
-第4-5天：模型微调训练
-第6-7天：模型评估与优化
-第8天：部署与演示
-```
+- [BitsAndBytes 文档](https://github.com/TimDettmers/bitsandbytes)
 
 ---
 
-*文档版本：v2.0*
-*适用场景：心理咨询客服对话模型微调项目*
+> 项目持续更新中，如有问题欢迎提 Issue 或 PR。
