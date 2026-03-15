@@ -6,7 +6,7 @@
       <paths name="FineTune">
         <serverdata>
           <mappings>
-            <mapping deploy="/root/code" local="$PROJECT_DIR$" web="/" />
+            <mapping deploy="/" local="$PROJECT_DIR$" web="/" />
           </mappings>
         </serverdata>
       </paths>

@@ -40,6 +40,10 @@ from pathlib import Path
 from typing import List, Dict, Optional
 from dataclasses import asdict
 
+# ==================== 第三方库导入 ====================
+import torch
+from transformers import DataCollatorForSeq2Seq
+
 # ==================== 项目内部导入 ====================
 # 添加项目根目录到 Python 路径
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -401,36 +405,48 @@ def train(
 
         # 评估配置
         eval_steps=config.training.eval_steps if eval_dataset else None,
-        evaluation_strategy=config.training.evaluation_strategy if eval_dataset else "no",
+        eval_strategy=config.training.evaluation_strategy if eval_dataset else "no",  # 新版 transformers 使用 eval_strategy 替代 evaluation_strategy
         load_best_model_at_end=config.training.load_best_model_at_end if eval_dataset else False,
 
         # 其他配置
         max_grad_norm=config.training.max_grad_norm,  # 梯度裁剪
         seed=config.training.seed,                     # 随机种子
+        remove_unused_columns=False,                   # 使用自定义 data_collator 时必须设置
     )
 
-    # ========== 5. 创建 Trainer ==========
-    print("\n5. 创建 Trainer...")
+    # ========== 5. 创建数据整理器 ==========
+    # 使用 DataCollatorForSeq2Seq 进行动态填充，处理变长序列
+    data_collator = DataCollatorForSeq2Seq(
+        tokenizer=tokenizer,
+        model=model,
+        padding=True,              # 动态填充到批次中最长序列
+        pad_to_multiple_of=8,      # 填充到 8 的倍数，提高 GPU 效率
+        return_tensors="pt"        # 返回 PyTorch 张量
+    )
+
+    # ========== 6. 创建 Trainer ==========
+    print("\n6. 创建 Trainer...")
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
+        data_collator=data_collator,  # 使用数据整理器
     )
 
-    # ========== 6. 开始训练 ==========
-    print("\n6. 开始训练...")
+    # ========== 7. 开始训练 ==========
+    print("\n7. 开始训练...")
     print("-" * 60)
     trainer.train(resume_from_checkpoint=resume_from)
 
-    # ========== 7. 保存最终模型 ==========
-    print("\n7. 保存模型...")
+    # ========== 8. 保存最终模型 ==========
+    print("\n8. 保存模型...")
     final_output_dir = os.path.join(output_dir, "final")
     trainer.save_model(final_output_dir)
     tokenizer.save_pretrained(final_output_dir)
     print(f"   ✓ 模型已保存到: {final_output_dir}")
 
-    # ========== 8. 完成 ==========
+    # ========== 9. 完成 ==========
     print("\n" + "=" * 60)
     print("✓ 训练完成！")
     print("=" * 60)

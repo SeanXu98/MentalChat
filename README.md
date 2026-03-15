@@ -541,18 +541,78 @@ python scripts/check_environment.py
 
 ### 5.2 数据准备
 
+#### 5.2.1 基础数据处理
+
 ```bash
-# 1. 将原始数据放入 data/raw/ 目录
+# 步骤 1: 将原始数据放入 data/raw/ 目录
 # 数据格式要求：CSV 文件，包含 Conversation ID, Turn ID, Input, Output 字段
 
-# 2. 查看数据探查结果
+# 步骤 2: 查看数据探查结果（可选）
 python scripts/process_data.py --explore-only
 
-# 3. 处理数据（多轮对话模式）
+# 步骤 3: 处理数据（多轮对话模式）
 python scripts/process_data.py --mode multi
+```
 
-# 4. （可选）启用 AI 数据增强
-python scripts/process_data.py --mode multi --augment --augment-ratio 0.3
+#### 5.2.2 AI 数据增强（可选）
+
+数据增强可以扩充训练数据，提升模型效果。
+
+**快速开始：**
+
+```bash
+# 基础用法（使用默认设置）
+python scripts/process_data.py --mode multi --augment
+
+# 指定增强比例和 API
+python scripts/process_data.py --mode multi --augment --augment-ratio 0.3 --api-type qwen
+```
+
+**选择 API 提供商：**
+
+```bash
+# 使用 Qwen API（阿里云）
+export DASHSCOPE_API_KEY='your-api-key'
+python scripts/process_data.py --mode multi --augment --api-type qwen
+
+# 使用 GLM API（智谱 AI）
+export ZHIPUAI_API_KEY='your-api-key'
+python scripts/process_data.py --mode multi --augment --api-type glm
+```
+
+| API | 获取地址 | 推荐模型 |
+|-----|---------|---------|
+| Qwen | https://dashscope.console.aliyun.com/ | qwen-plus |
+| GLM | https://open.bigmodel.cn/ | glm-4.7 |
+
+**选择增强策略：**
+
+```bash
+# 单一策略
+python scripts/process_data.py --mode multi --augment --strategies paraphrase
+
+# 多策略组合
+python scripts/process_data.py --mode multi --augment --strategies paraphrase enhance
+
+# 全部策略
+python scripts/process_data.py --mode multi --augment --strategies paraphrase enhance scenario
+```
+
+| 策略 | 说明 |
+|------|------|
+| `paraphrase` | 同义改写用户输入，增加表达多样性（默认） |
+| `enhance` | 优化咨询师回复，使回复更专业、更有共情心 |
+| `scenario` | 场景扩展，将问题改编为不同生活场景 |
+
+**完整参数示例：**
+
+```bash
+# 使用 Qwen API，30% 增强比例，启用改写+优化两种策略
+python scripts/process_data.py --mode multi \
+    --augment \
+    --augment-ratio 0.3 \
+    --api-type qwen \
+    --strategies paraphrase enhance
 ```
 
 ### 5.3 模型下载
@@ -593,6 +653,62 @@ python scripts/inference.py --lora-path output/checkpoints/final --input "我最
 # 启动 Gradio 对话界面
 python chat/app.py
 # 访问 http://localhost:7860
+```
+
+### 5.6 模型对比评估（推荐）
+
+完成微调后，强烈建议对比微调前后的模型效果，评估微调价值。
+
+```bash
+# 对比微调模型和基座模型
+python scripts/compare_models.py --lora-path output/checkpoints/final
+
+# 快速测试（限制样本数）
+python scripts/compare_models.py --lora-path output/checkpoints/final --max-samples 50
+
+# 保存详细对比结果
+python scripts/compare_models.py --lora-path output/checkpoints/final --save-details
+```
+
+**评估维度：**
+
+| 指标 | 说明 | 期望效果 |
+|------|------|--------|
+| ROUGE-1/2/L | 文本相似度 | 微调后应略高 |
+| 专业术语覆盖 | 心理咨询关键词使用率 | 微调后应更高 |
+| 平均回复长度 | 回复详细程度 | 微调后可能更长 |
+| 回复样例 | 直观对比回复质量 | 人工评估参考 |
+
+**输出示例:**
+```
+======================================================================
+模型对比评估报告
+======================================================================
+测试样本: 100 条
+
+------------------------------------------------------------------------------
+【指标对比】
+------------------------------------------------------------------------------
+指标              基座模型        微调后模型        提升
+------------------------------------------------------------------------------
+ROUGE-1          0.356          0.412          +15.7%
+ROUGE-2          0.142          0.187          +31.7%
+ROUGE-L          0.289          0.345          +19.4%
+专业术语覆盖率     23.4%          45.6%          +22.2pp
+平均回复长度       42.3字         78.5字         +36.2字
+
+------------------------------------------------------------------------------
+【回复样例对比】
+------------------------------------------------------------------------------
+用户输入: 我最近总是感觉很焦虑，不知道该怎么办...
+
+基座模型回复:
+  作为一个AI，我不能给出医疗建议...建议您咨询专业心理医生...
+
+微调后模型回复:
+  我理解你现在的焦虑感受，这种感觉确实让人很不安。你愿意多和我
+
+聊聊是什么让你感到焦虑的吗？我们可以一起找到应对的方法。
 ```
 
 ---
@@ -893,10 +1009,68 @@ tensorboard --logdir output/logs --port 6006
 python scripts/evaluate.py --lora-path output/checkpoints/final
 
 # 查看评估结果
-# - BLEU 分数：衡量生成文本与参考文本的相似度
-# - ROUGE 分数：衡量召回率
-# - 人工评估：回复的专业性和共情度
+# - BLEU 分数: 衡量生成文本与参考文本的相似度
+# - ROUGE 分数: 衡量召回率
+# - 人工评估: 回复的专业性和共情度
 ```
+
+### 6.5 模型对比评估
+
+训练完成后，需要对比基座模型和微调后模型的效果，以验证微调的价值。
+
+#### 6.5.1 使用对比评估脚本
+
+```bash
+# 基本用法（推荐）
+python scripts/compare_models.py --lora-path output/checkpoints/final
+
+# 快速测试（限制样本数）
+python scripts/compare_models.py --lora-path output/checkpoints/final --max-samples 50
+
+# 保存详细对比结果到文件
+python scripts/compare_models.py --lora-path output/checkpoints/final --save-details
+```
+
+#### 6.5.2 评估维度说明
+
+| 指标 | 说明 | 期望变化 |
+|------|------|----------|
+| **ROUGE-1/2/L** | 文本相似度指标 | 微调后略有提升（+20%~+50%） |
+| **平均回复长度** | 模型回复的字数 | 微调后更接近参考长度 |
+| **专业术语覆盖率** | 心理咨询关键词使用比例 | 微调后显著提升（+10%~+30%） |
+| **不推荐词使用率** | 机械性AI表达的比例 | 微调后显著降低 |
+
+#### 6.5.3 对比报告示例
+
+```
+============================================================
+模型对比评估报告
+============================================================
+
+模型配置:
+  娡型类型      平均回复长度    专业术语覆盖率
+  基座模型       42.3字          12.5%
+  微调模型       78.5字          56.8%
+
+ROUGE 指标对比:
+  指标        基座模型    微调模型    提升
+  ROUGE-1    0.234      0.312      +33.4%
+  ROUGE-L    0.189      0.267      +41.3%
+
+回复样例对比 (#1):
+------------------------------------------------------------
+用户输入: 我最近总是感觉很焦虑，不知道该怎么办...
+
+【基座模型】 作为一个AI，我不能给出医疗建议...建议您咨询专业心理医生...
+【微调模型】 我理解你现在的焦虑感受...你愿意多和我聊聊是什么让你感到焦虑的吗？我们可以一起找到应对的方法。
+```
+
+#### 6.5.4 埥看详细对比结果
+
+如果使用了 `--save-details` 参数，结果会保存到 `output/model_comparison.json`，包含：
+- 宯整的指标数据
+- 所有样本的回复对比
+- 可用于后续分析
 
 ---
 
@@ -913,38 +1087,73 @@ python scripts/evaluate.py --lora-path output/checkpoints/final
 | **scenario** | 场景扩展（如青少年、职场等） | 增加场景覆盖 |
 | **clean** | 清理和标准化回复 | 提升数据质量 |
 
-### 7.2 使用方法
+### 7.2 支持的 API 提供商
+
+数据增强模块支持多种大语言模型 API：
+
+| API 类型 | 提供商 | 推荐模型 | 特点 |
+|----------|--------|----------|------|
+| **GLM** | 智谱 AI | glm-4.7 | 中文理解能力强，推荐使用 |
+| **Qwen** | 阿里云 DashScope | qwen-plus | 性价比高，响应快速 |
+
+### 7.3 使用方法
+
+#### 7.3.1 使用 GLM API（推荐）
 
 ```python
-from scripts.augmentation import DataAugmenter, create_augmenter
+from scripts.augmentation import DataAugmenter, GLMAPI, create_augmenter
 
-# 方式一：使用便捷函数
+# 方式一：使用便捷函数（推荐）
 augmenter = create_augmenter(
-    api_key="your-dashscope-api-key",  # 或设置环境变量 DASHSCOPE_API_KEY
+    api_type="glm",  # 使用 GLM API
     augment_ratio=0.3,
     strategies=["paraphrase", "enhance"]
 )
 
-# 方式二：直接创建
-from scripts.augmentation import DataAugmenter
+# 方式二：直接创建 GLMAPI 实例
+api = GLMAPI(api_key="your-api-key", model="glm-4.7")
+augmenter = DataAugmenter(api_type="glm", api_key="your-api-key")
+
+# 方式三：使用 DataAugmenter 类
 augmenter = DataAugmenter(
-    api_key="your-api-key",
-    model="qwen-plus",
-    augment_ratio=0.3
+    api_type="glm",
+    model="glm-4.7",  # 可选：glm-4, glm-4-flash, glm-4-plus, glm-4.7
+    augment_ratio=0.3,
+    strategies=["paraphrase", "enhance"]
 )
 
 # 执行增强
-augmented_data = augmenter.augment(
-    data,
-    strategies=["paraphrase", "enhance"],
-    verbose=True
-)
+augmented_data = augmenter.augment(data, verbose=True)
 
 # 查看统计信息
 print(augmenter.get_stats())
 ```
 
-### 7.3 命令行使用
+#### 7.3.2 使用 Qwen API
+
+```python
+from scripts.augmentation import DataAugmenter, QwenAPI, create_augmenter
+
+# 方式一：使用便捷函数
+augmenter = create_augmenter(
+    api_type="qwen",
+    augment_ratio=0.3,
+    strategies=["paraphrase", "enhance"]
+)
+
+# 方式二：直接创建
+augmenter = DataAugmenter(
+    api_type="qwen",
+    model="qwen-plus",  # 可选：qwen-turbo, qwen-plus, qwen-max
+    api_key="your-dashscope-api-key",
+    augment_ratio=0.3
+)
+
+# 执行增强
+augmented_data = augmenter.augment(data, verbose=True)
+```
+
+### 7.4 命令行使用
 
 ```bash
 # 在数据处理时启用增强
@@ -954,19 +1163,68 @@ python scripts/process_data.py --mode multi --augment --augment-ratio 0.3
 python scripts/process_data.py --mode multi --augment --strategies paraphrase,enhance
 ```
 
-### 7.4 API 配置
+### 7.5 API 配置
 
-数据增强使用阿里云 DashScope API，需要配置：
+#### 7.5.1 GLM API（智谱 AI）配置
+
+```bash
+# 设置环境变量
+export ZHIPUAI_API_KEY="your-api-key"
+
+# 或在代码中传入
+augmenter = DataAugmenter(api_type="glm", api_key="your-api-key")
+```
+
+**获取 GLM API Key：**
+1. 访问 [智谱 AI 开放平台](https://open.bigmodel.cn/)
+2. 注册/登录账号
+3. 进入控制台创建 API Key
+
+**GLM 模型选择建议：**
+
+| 模型 | 特点 | 适用场景 |
+|------|------|----------|
+| **glm-4.7** | 最新版本，性能最佳 | 推荐默认使用 |
+| glm-4-plus | 高性能版本 | 复杂任务 |
+| glm-4-flash | 快速响应 | 简单任务、批量处理 |
+| glm-4 | 标准版本 | 通用场景 |
+
+#### 7.5.2 Qwen API（阿里云 DashScope）配置
 
 ```bash
 # 设置环境变量
 export DASHSCOPE_API_KEY="your-api-key"
 
 # 或在代码中传入
-augmenter = DataAugmenter(api_key="your-api-key")
+augmenter = DataAugmenter(api_type="qwen", api_key="your-api-key")
 ```
 
-获取 API Key：访问 [阿里云 DashScope](https://dashscope.console.aliyun.com/) 注册并创建 API Key。
+**获取 Qwen API Key：**
+1. 访问 [阿里云 DashScope 控制台](https://dashscope.console.aliyun.com/)
+2. 注册/登录阿里云账号
+3. 创建 API Key
+
+### 7.6 增强效果示例
+
+```python
+# 原始数据
+original = {
+    "input": "最近工作压力很大，经常失眠",
+    "response": "我理解你的感受，建议你尝试放松一下。"
+}
+
+# 同义改写后
+paraphrased = {
+    "input": "这段时间工作上的事情让我喘不过气，晚上总是睡不着",
+    "response": "我理解你的感受，建议你尝试放松一下。"
+}
+
+# 回复增强后
+enhanced = {
+    "input": "最近工作压力很大，经常失眠",
+    "response": "我能感受到你现在承受着很大的压力。失眠确实会让人感到疲惫和焦虑。建议你可以尝试一些放松的方法，比如睡前做深呼吸练习，或者听一些轻柔的音乐。如果情况持续，也可以考虑寻求专业帮助。"
+}
+```
 
 ---
 
@@ -1058,10 +1316,46 @@ augmenter = DataAugmenter(api_key="your-api-key")
 
 **解决方案**：
 
+#### GLM API 问题排查
+
+1. **检查 API Key**：确保 `ZHIPUAI_API_KEY` 正确设置
+   ```bash
+   # 检查环境变量
+   echo $ZHIPUAI_API_KEY
+
+   # 或在代码中验证
+   from scripts.augmentation import GLMAPI
+   api = GLMAPI()
+   print(f"API 可用: {api.is_available()}")
+   ```
+
+2. **检查账户余额**：登录 [智谱 AI 控制台](https://open.bigmodel.cn/) 查看余额
+
+3. **检查网络**：确保能访问 `open.bigmodel.cn`
+
+4. **常见错误码**：
+   - `401 Unauthorized`：API Key 无效或过期
+   - `429 Too Many Requests`：请求频率超限，稍后重试
+   - `500/502/503`：服务器错误，自动重试机制会处理
+
+#### Qwen API 问题排查
+
 1. **检查 API Key**：确保 `DASHSCOPE_API_KEY` 正确设置
 2. **检查账户余额**：确保 API 有足够的调用额度
 3. **检查网络**：确保能访问阿里云 API
 4. **降低并发**：减少同时请求的数量
+
+### 8.6 如何选择 API 提供商
+
+| 对比项 | GLM (智谱 AI) | Qwen (阿里云) |
+|--------|---------------|---------------|
+| 中文理解 | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
+| 响应速度 | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
+| 价格 | 相近 | 相近 |
+| 免费额度 | 有 | 有 |
+| 推荐场景 | 心理咨询等中文任务 | 通用场景 |
+
+**建议**：心理咨询对话增强推荐使用 GLM API (GLM-4.7)，中文理解和生成能力更强。
 
 ---
 
@@ -1100,6 +1394,7 @@ requests>=2.31.0
 - [QLoRA 论文](https://arxiv.org/abs/2305.14314)
 - [LoRA 论文](https://arxiv.org/abs/2106.09685)
 - [Qwen2.5 文档](https://github.com/QwenLM/Qwen2.5)
+- [智谱 AI GLM 文档](https://open.bigmodel.cn/dev/api)
 - [PEFT 文档](https://huggingface.co/docs/peft)
 - [Transformers 文档](https://huggingface.co/docs/transformers)
 - [BitsAndBytes 文档](https://github.com/TimDettmers/bitsandbytes)

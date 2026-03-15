@@ -23,8 +23,11 @@
     # 仅探查数据（不进行转换）
     python scripts/process_data.py --explore-only
 
-    # 启用 AI 数据增强
-    python scripts/process_data.py --augment --augment-ratio 0.3
+    # 启用 AI 数据增强（使用 GLM API，推荐）
+    python scripts/process_data.py --augment --augment-ratio 0.3 --api-type glm
+
+    # 启用 AI 数据增强（使用 Qwen API）
+    python scripts/process_data.py --augment --augment-ratio 0.3 --api-type qwen
 
 输入格式：
     CSV 文件，应包含以下字段：
@@ -522,63 +525,14 @@ def split_dataset(
 
 # ==================== AI 数据增强 ====================
 
-class QwenAPI:
-    """
-    Qwen API 封装类（简化版）
-
-    用于调用阿里云 DashScope API 进行数据增强。
-    完整版本请参考 scripts/augmentation.py
-    """
-
-    def __init__(self, api_key: str = None, model: str = "qwen-plus"):
-        """
-        初始化 API 客户端
-
-        Args:
-            api_key: DashScope API 密钥
-            model: Qwen 模型名称
-        """
-        self.api_key = api_key or os.environ.get("DASHSCOPE_API_KEY")
-        self.model = model
-        self.base_url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation"
-
-    def call(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
-        """
-        调用 API 生成文本
-
-        Args:
-            prompt: 提示文本
-            max_tokens: 最大生成 token 数
-
-        Returns:
-            生成的文本，失败返回 None
-        """
-        if not self.api_key:
-            return None
-
-        try:
-            import requests
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
-            }
-            data = {
-                "model": self.model,
-                "input": {"prompt": prompt},
-                "parameters": {"max_tokens": max_tokens}
-            }
-            response = requests.post(self.base_url, headers=headers, json=data, timeout=30)
-            if response.status_code == 200:
-                result = response.json()
-                return result.get("output", {}).get("text", "")
-        except Exception as e:
-            print(f"  API 调用失败: {e}")
-        return None
+# 注意：API 客户端类（QwenAPI、GLMAPI）在 scripts/augmentation.py 中定义
+# 这里直接导入使用，避免代码重复
+from scripts.augmentation import QwenAPI, GLMAPI, create_api_client
 
 
 def augment_data(
     data: List[Dict[str, Any]],
-    api: QwenAPI,
+    api,
     strategies: List[str] = None,
     augment_ratio: float = 0.3,
     verbose: bool = True
@@ -590,7 +544,7 @@ def augment_data(
 
     Args:
         data: 原始数据列表
-        api: Qwen API 实例
+        api: API 客户端实例（支持 QwenAPI 或 GLMAPI）
         strategies: 增强策略列表（目前只支持 paraphrase）
         augment_ratio: 增强比例
         verbose: 是否输出详细信息
@@ -598,10 +552,12 @@ def augment_data(
     Returns:
         增强后的数据列表（包含原始数据）
     """
+    import time
+
     # 检查 API 是否可用
     if api is None or api.api_key is None:
         if verbose:
-            print("  未配置 API Key，跳过数据增强")
+            print("   未配置 API Key，跳过数据增强")
         return data
 
     if strategies is None:
@@ -614,27 +570,190 @@ def augment_data(
     num_to_augment = int(len(data) * augment_ratio)
     indices = random.sample(range(len(data)), min(num_to_augment, len(data)))
 
-    # 执行增强
+    # ========== 打印增强任务信息 ==========
+    if verbose:
+        print(f"   增强策略: {', '.join(strategies)}")
+        print(f"   目标数量: {num_to_augment} 条 ({augment_ratio*100:.1f}%)")
+
+    # ========== 测试 API 连通性 ==========
+    if verbose:
+        print(f"   测试 API 连通性...")
+    try:
+        # 使用 raise_on_error=True 来获取详细错误信息
+        test_result = api.call("你好，请回复'测试成功'", max_tokens=50, raise_on_error=True)
+        if test_result:
+            if verbose:
+                # 截断过长的响应
+                response_preview = test_result[:50] + "..." if len(test_result) > 50 else test_result
+                print(f"   ✓ API 连接正常")
+                print(f"   响应示例: {response_preview}")
+                print(f"   开始处理...")
+                print()
+        else:
+            print(f"   ✗ API 返回为空，请检查 API Key 和模型配置")
+            print(f"   提示: 确保已设置正确的环境变量 ZHIPUAI_API_KEY 或 DASHSCOPE_API_KEY")
+            return data
+    except Exception as e:
+        print(f"   ✗ API 连接失败: {e}")
+        print(f"   提示: 请检查网络连接、API Key 和模型名称是否正确")
+        return data
+
+    # ========== 执行增强（带进度显示）==========
     success_count = 0
-    for idx in indices:
+    fail_count = 0
+    error_messages = []  # 收集错误信息
+    consecutive_failures = 0  # 连续失败计数
+    max_consecutive_failures = 10  # 连续失败超过此次数则停止
+    start_time = time.time()
+
+    for i, idx in enumerate(indices):
         record = data[idx]
         user_input = record.get('Input', '') or record.get('input', '')
+        user_output = record.get('Output', '') or record.get('output', '')
 
         for strategy in strategies:
+            prompt = None
+            target_field = None
+            strategy_name = None
+
             if strategy == "paraphrase":
-                # 同义改写策略
+                # 同义改写策略：改写用户输入
                 prompt = f"请将以下用户问题改写为意思相近但表达不同的版本，只需输出改写后的问题：\n\n{user_input}"
-                result = api.call(prompt, max_tokens=200)
+                target_field = 'Input'
+                strategy_name = 'paraphrase'
 
-                if result and len(result.strip()) > 5:
-                    new_record = record.copy()
-                    new_record['Input'] = result.strip()
-                    new_record['_augmented'] = 'paraphrase'
-                    augmented_data.append(new_record)
-                    success_count += 1
+            elif strategy == "enhance":
+                # 回复增强策略：优化咨询师回复
+                prompt = f"""你是一位专业的心理咨询师。请优化以下咨询回复，使其更加专业、更有共情心。
+要求：
+1. 保持原意不变
+2. 使用更温暖、更专业的表达
+3. 适当增加共情语句
+4. 只输出优化后的回复
 
+用户问题：{user_input}
+
+原回复：{user_output}
+
+优化后的回复："""
+                target_field = 'Output'
+                strategy_name = 'enhance'
+
+            elif strategy == "scenario":
+                # 场景扩展策略：将问题改编为不同场景
+                prompt = f"""请将以下心理咨询问题改写为不同的生活场景，保持核心心理问题不变。
+要求：
+1. 改变具体的情境描述
+2. 保持问题的心理本质
+3. 只输出改写后的问题
+
+原问题：{user_input}
+
+改写后的问题："""
+                target_field = 'Input'
+                strategy_name = 'scenario'
+
+            # 如果有有效的策略，执行 API 调用
+            if prompt and target_field:
+                try:
+                    # 使用 raise_on_error=True 来获取详细错误
+                    result = api.call(prompt, max_tokens=300, raise_on_error=True)
+
+                    if result and len(result.strip()) > 10:
+                        new_record = record.copy()
+                        new_record[target_field] = result.strip()
+                        new_record['_augmented'] = strategy_name
+                        augmented_data.append(new_record)
+                        success_count += 1
+                        consecutive_failures = 0  # 成功后重置连续失败计数
+                    else:
+                        fail_count += 1
+                        consecutive_failures += 1
+                        error_msg = f"返回为空" if result is None else f"返回过短({len(result.strip())}字符)"
+                        error_messages.append(f"第 {i+1} 条 [{strategy}]: {error_msg}")
+                except Exception as e:
+                    fail_count += 1
+                    consecutive_failures += 1
+                    error_messages.append(f"第 {i+1} 条 [{strategy}]: {str(e)}")
+
+                # 检查连续失败次数，避免无效的 API 调用
+                if consecutive_failures >= max_consecutive_failures:
+                    print()  # 换行
+                    print()
+                    print(f"   ⚠ 连续失败 {consecutive_failures} 次，停止增强")
+                    print(f"   最后错误: {error_messages[-1] if error_messages else '未知'}")
+                    print(f"   请检查 API 配置是否正确")
+                    break  # 跳出策略循环
+
+        # 检查是否需要跳出外层循环
+        if consecutive_failures >= max_consecutive_failures:
+            break  # 跳出数据循环
+
+        # ========== 显示进度和样例（每100条显示一条） ==========
+        if verbose:
+            current = i + 1
+            elapsed = time.time() - start_time
+            avg_time = elapsed / current if current > 0 else 0
+            remaining = avg_time * (num_to_augment - current)
+
+            # 计算进度百分比
+            progress = current / num_to_augment * 100
+
+            # 创建进度条
+            bar_length = 30
+            filled = int(bar_length * current / num_to_augment)
+            bar = '█' * filled + '░' * (bar_length - filled)
+
+            # 格式化时间
+            if remaining > 60:
+                time_str = f"{int(remaining // 60)}分{int(remaining % 60)}秒"
+            else:
+                time_str = f"{int(remaining)}秒"
+
+            # 每处理100条打印一条样例
+            if success_count > 0 and success_count % 100 == 0:
+                # 蟥找最近成功增强的记录
+                last_record = augmented_data[-1]
+                strategy_type = last_record.get('_augmented', 'unknown')
+                original_input = data[idx].get('Input', '') or data[idx].get('input', '')[:60]
+                new_content = last_record.get('Input', '') or last_record.get('Output', '')
+
+                print()  # 换行
+                print(f"   📝 样例 #{success_count} [{strategy_type}]:")
+                print(f"      原始: {original_input}")
+                print(f"      增强: {new_content}")
+
+            # 打印进度（覆盖上一行）
+            print(f"\r   [{bar}] {current}/{num_to_augment} ({progress:.1f}%) | "
+                  f"成功: {success_count} | 失败: {fail_count} | "
+                  f"预计剩余: {time_str}    ", end='', flush=True)
+
+    # ========== 打印完成信息 ==========
     if verbose:
-        print(f"  ✓ 增强完成: 新增 {success_count} 条数据，总计 {len(augmented_data)} 条")
+        total_time = time.time() - start_time
+        if total_time > 60:
+            time_str = f"{total_time // 60:.0f}分{total_time % 60:.0f}秒"
+        else:
+            time_str = f"{total_time:.1f}秒"
+
+        print()  # 换行
+        print()
+        print(f"   ✓ 增强完成:")
+        print(f"     - 成功: {success_count} 条")
+        print(f"     - 失败: {fail_count} 条")
+        if (success_count + fail_count) > 0:
+            print(f"     - 成功率: {success_count/(success_count+fail_count)*100:.1f}%")
+        print(f"     - 耗时: {time_str}")
+        print(f"     - 数据总量: {len(data)} → {len(augmented_data)} 条")
+
+        # 显示错误详情（最多显示10条）
+        if fail_count > 0 and error_messages:
+            print()
+            print(f"   错误详情 (显示前10条):")
+            for msg in error_messages[:10]:
+                print(f"     - {msg}")
+            if len(error_messages) > 10:
+                print(f"     ... 还有 {len(error_messages) - 10} 条错误")
 
     return augmented_data
 
@@ -653,8 +772,9 @@ def process_data(
     augment: bool = False,
     augment_ratio: float = 0.3,
     augment_strategies: List[str] = None,
+    api_type: str = "glm",
     api_key: str = None,
-    api_model: str = "qwen-plus",
+    api_model: str = None,
     verbose: bool = True
 ):
     """
@@ -681,8 +801,9 @@ def process_data(
         augment: 是否启用 AI 数据增强
         augment_ratio: 增强比例
         augment_strategies: 增强策略列表
-        api_key: DashScope API 密钥
-        api_model: Qwen 模型名称
+        api_type: API 类型（"glm" 或 "qwen"）
+        api_key: API 密钥（未提供时从环境变量读取）
+        api_model: 模型名称（未提供时使用默认模型）
         verbose: 是否输出详细信息
     """
     # ========== 打印配置信息 ==========
@@ -692,7 +813,7 @@ def process_data(
     print(f"输入文件: {input_file}")
     print(f"输出目录: {output_dir}")
     print(f"转换模式: {mode}-turn")
-    print(f"AI 增强: {'启用' if augment else '禁用'}")
+    print(f"AI 增强: {'启用 (' + api_type.upper() + ')' if augment else '禁用'}")
     print()
 
     # ========== 1. 加载数据 ==========
@@ -720,14 +841,25 @@ def process_data(
     if verbose:
         print("\n4. AI 数据增强...")
     if augment:
-        qwen_api = QwenAPI(api_key=api_key, model=api_model)
-        augmented_data = augment_data(
-            cleaned_data,
-            api=qwen_api,
-            strategies=augment_strategies,
-            augment_ratio=augment_ratio,
-            verbose=verbose
-        )
+        # 使用工厂函数创建 API 客户端
+        api_client = create_api_client(api_type=api_type, api_key=api_key, model=api_model)
+
+        if api_client is not None:
+            # 设置默认模型名称（用于显示）
+            display_model = api_model or ("glm-4.7" if api_type.lower() == "glm" else "qwen-plus")
+            print(f"   使用 {api_type.upper()} API，模型: {display_model}")
+
+            # 执行数据增强
+            augmented_data = augment_data(
+                cleaned_data,
+                api=api_client,
+                strategies=augment_strategies,
+                augment_ratio=augment_ratio,
+                verbose=verbose
+            )
+        else:
+            augmented_data = cleaned_data
+            print("   跳过（API 客户端创建失败）")
     else:
         augmented_data = cleaned_data
         print("   跳过")
@@ -811,8 +943,17 @@ def main():
     # 仅探查数据
     python scripts/process_data.py --explore-only
 
-    # 启用 AI 数据增强
-    python scripts/process_data.py --augment --augment-ratio 0.3
+    # 启用 AI 数据增强（使用 GLM API，推荐）
+    python scripts/process_data.py --augment --augment-ratio 0.3 --api-type glm
+
+    # 启用 AI 数据增强（使用 Qwen API）
+    python scripts/process_data.py --augment --augment-ratio 0.3 --api-type qwen
+
+    # 使用多种增强策略
+    python scripts/process_data.py --augment --strategies paraphrase enhance
+
+    # 使用全部增强策略
+    python scripts/process_data.py --augment --strategies paraphrase enhance scenario
         """
     )
 
@@ -874,19 +1015,34 @@ def main():
         "--augment-ratio",
         type=float,
         default=config.augment.augment_ratio,
-        help="增强比例"
+        help="增强比例（默认 0.3）"
+    )
+    parser.add_argument(
+        "--strategies",
+        type=str,
+        nargs="+",
+        choices=["paraphrase", "enhance", "scenario"],
+        default=["paraphrase"],
+        help="增强策略（可多选）: paraphrase(同义改写), enhance(回复增强), scenario(场景扩展)"
+    )
+    parser.add_argument(
+        "--api-type",
+        type=str,
+        choices=["glm", "qwen"],
+        default="glm",
+        help="API 类型: glm(智谱AI，推荐) 或 qwen(阿里云)"
     )
     parser.add_argument(
         "--api-key",
         type=str,
         default=None,
-        help="DashScope API Key"
+        help="API Key（未提供时从环境变量读取）"
     )
     parser.add_argument(
         "--api-model",
         type=str,
-        default="qwen-plus",
-        help="Qwen 模型"
+        default=None,
+        help="API 模型名称（默认: glm-4.7 或 qwen-plus）"
     )
 
     # 解析参数
@@ -909,6 +1065,8 @@ def main():
         explore_only=args.explore_only,
         augment=args.augment,
         augment_ratio=args.augment_ratio,
+        augment_strategies=args.strategies,
+        api_type=args.api_type,
         api_key=args.api_key,
         api_model=args.api_model
     )

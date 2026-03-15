@@ -4,7 +4,11 @@
 数据增强模块
 ============
 
-本模块提供心理咨询对话数据的 AI 辅助增强功能，使用阿里云 DashScope Qwen API 实现。
+本模块提供心理咨询对话数据的 AI 辅助增强功能，支持多种大语言模型 API 实现。
+
+支持的 API 提供商：
+    - 阿里云 DashScope (Qwen 系列)
+    - 智谱 AI (GLM 系列，推荐 GLM-4.7)
 
 主要功能：
     - 同义改写（Paraphrase）：改写用户输入，生成多样化的训练样本
@@ -13,19 +17,33 @@
     - 场景扩展（Scenario Expansion）：将问题改编为不同场景
 
 使用方法：
+    # 使用 Qwen API
     from scripts.augmentation import DataAugmenter, QwenAPI
-
-    # 初始化
     api = QwenAPI(api_key="your-api-key")
     augmenter = DataAugmenter(api)
-
-    # 执行增强
     augmented = augmenter.augment(data, strategies=["paraphrase", "enhance"])
 
+    # 使用 GLM API（推荐）
+    from scripts.augmentation import DataAugmenter, GLMAPI
+    api = GLMAPI(api_key="your-api-key")
+    augmenter = DataAugmenter(api)
+    augmented = augmenter.augment(data, strategies=["paraphrase", "enhance"])
+
+    # 使用工厂函数自动选择可用的 API
+    from scripts.augmentation import create_augmenter
+    augmenter = create_augmenter(api_type="glm")  # 优先使用 GLM
+    augmented = augmenter.augment(data)
+
 API 密钥获取：
-    1. 访问阿里云 DashScope 控制台
-    2. 创建 API Key
-    3. 设置环境变量: export DASHSCOPE_API_KEY='your-api-key'
+    Qwen (阿里云 DashScope)：
+        1. 访问阿里云 DashScope 控制台
+        2. 创建 API Key
+        3. 设置环境变量: export DASHSCOPE_API_KEY='your-api-key'
+
+    GLM (智谱 AI)：
+        1. 访问智谱 AI 开放平台 https://open.bigmodel.cn/
+        2. 创建 API Key
+        3. 设置环境变量: export ZHIPUAI_API_KEY='your-api-key'
 
 作者：MentalChat 项目组
 """
@@ -72,9 +90,10 @@ class AugmentationConfig:
         enabled: 是否启用数据增强
         augment_ratio: 增强比例（0-1），表示对多少比例的数据进行增强
         strategies: 增强策略列表，可选值：paraphrase, enhance, scenario, clean
-        api_key: DashScope API 密钥
-        api_model: 使用的 Qwen 模型名称
-        api_base_url: API 基础 URL
+        api_type: API 类型，可选值：qwen, glm
+        api_key: API 密钥（可选，默认从环境变量获取）
+        api_model: 使用的模型名称
+        api_base_url: API 基础 URL（可选）
         scenario_types: 场景扩展时使用的场景类型列表
         max_retries: API 调用最大重试次数
         retry_delay: 重试间隔（秒）
@@ -89,10 +108,21 @@ class AugmentationConfig:
     # 增强策略列表
     strategies: List[str] = field(default_factory=lambda: ["paraphrase", "enhance"])
 
-    # Qwen API 配置
+    # API 类型选择：qwen（阿里云 DashScope）或 glm（智谱 AI）
+    api_type: str = "glm"  # 默认使用 GLM API
+
+    # API 密钥配置（可选，默认从环境变量获取）
+    # Qwen API: 从 DASHSCOPE_API_KEY 环境变量获取
+    # GLM API: 从 ZHIPUAI_API_KEY 环境变量获取
     api_key: Optional[str] = None
-    api_model: str = "qwen-plus"  # 可选: qwen-turbo, qwen-plus, qwen-max
-    api_base_url: str = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation"
+
+    # 模型配置
+    # Qwen 可选: qwen-turbo, qwen-plus, qwen-max
+    # GLM 可选: glm-4, glm-4-flash, glm-4-plus, glm-4.7（推荐）
+    api_model: str = "glm-4.7"
+
+    # API 基础 URL（通常使用默认值即可）
+    api_base_url: Optional[str] = None
 
     # 增强场景类型（用于场景扩展策略）
     scenario_types: List[str] = field(default_factory=lambda: ["青少年", "职场", "家庭", "学业"])
@@ -164,7 +194,8 @@ class QwenAPI:
         prompt: str,
         system_prompt: str = None,
         temperature: float = 0.7,
-        max_tokens: int = 1024
+        max_tokens: int = 1024,
+        raise_on_error: bool = False
     ) -> Optional[str]:
         """
         调用 Qwen API 生成文本
@@ -174,9 +205,13 @@ class QwenAPI:
             system_prompt: 系统提示文本（可选，用于设定模型角色）
             temperature: 温度参数，控制输出的随机性（0-2），值越大越随机
             max_tokens: 最大生成 token 数
+            raise_on_error: 是否在失败时抛出异常（默认 False，返回 None）
 
         Returns:
             生成的文本内容，如果调用失败则返回 None
+
+        Raises:
+            当 raise_on_error=True 时，失败会抛出异常
 
         调用流程：
         1. 构建请求头和请求体
@@ -185,6 +220,8 @@ class QwenAPI:
         4. 如果失败则自动重试（最多 3 次）
         """
         if not self.is_available():
+            if raise_on_error:
+                raise ValueError("API Key 未配置，请设置环境变量 DASHSCOPE_API_KEY")
             return None
 
         # ========== 构建请求头 ==========
@@ -213,6 +250,7 @@ class QwenAPI:
         }
 
         # ========== 发送请求（带重试机制）==========
+        last_error = None
         for attempt in range(3):  # 最多重试 3 次
             try:
                 if HAS_REQUESTS:
@@ -244,14 +282,265 @@ class QwenAPI:
                 elif "output" in result and "text" in result["output"]:
                     # 旧版文本格式
                     return result["output"]["text"]
+                elif "code" in result and result["code"] != "Success":
+                    # API 返回错误码
+                    last_error = f"API 错误: {result.get('code')} - {result.get('message', '未知错误')}"
+                    if raise_on_error:
+                        raise RuntimeError(last_error)
+                    return None
                 else:
-                    print(f"API 响应格式异常: {result}")
+                    last_error = f"API 响应格式异常: {result}"
+                    if raise_on_error:
+                        raise RuntimeError(last_error)
                     return None
 
             except Exception as e:
-                print(f"API 调用失败 (尝试 {attempt + 1}/3): {e}")
-                time.sleep(1.0 * (attempt + 1))  # 指数退避
+                error_msg = str(e)
+                last_error = error_msg
 
+                # 提供更详细的错误信息
+                if "401" in error_msg or "Unauthorized" in error_msg:
+                    last_error = f"API 认证失败，请检查 API Key 是否正确 (HTTP 401)"
+                elif "429" in error_msg or "rate" in error_msg.lower():
+                    last_error = f"API 请求频率超限 (HTTP 429)"
+                    time.sleep(2.0 * (attempt + 1))
+                elif "500" in error_msg or "502" in error_msg or "503" in error_msg:
+                    last_error = f"API 服务暂时不可用 ({error_msg})"
+                    time.sleep(2.0 * (attempt + 1))
+                else:
+                    time.sleep(1.0 * (attempt + 1))  # 指数退避
+
+        # 所有重试都失败
+        if raise_on_error and last_error:
+            raise RuntimeError(f"Qwen API 调用失败（重试3次后）: {last_error}")
+        return None
+
+
+# ==================== GLM API 封装类 ====================
+
+class GLMAPI:
+    """
+    智谱 AI GLM API 封装类
+
+    该类封装了与智谱 AI GLM API 的交互逻辑，用于调用 GLM 系列模型进行数据增强。
+    推荐使用 GLM-4.7 模型，该模型在中文理解和生成方面表现优秀。
+
+    属性：
+        api_key (str): API 密钥
+        model (str): 模型名称
+        base_url (str): API 基础 URL
+
+    使用示例：
+        >>> api = GLMAPI(api_key="your-api-key")
+        >>> if api.is_available():
+        ...     result = api.call("你好", temperature=0.7)
+        ...     print(result)
+
+    模型选择建议：
+        - glm-4.7: 最新版本，性能最佳（推荐）
+        - glm-4-plus: 高性能版本
+        - glm-4-flash: 快速响应，适合简单任务
+        - glm-4: 标准版本
+
+    注意：
+        API 密钥可以从环境变量 ZHIPUAI_API_KEY 获取，也可以在初始化时传入。
+        获取 API Key：https://open.bigmodel.cn/
+    """
+
+    def __init__(
+        self,
+        api_key: str = None,
+        model: str = "glm-4.7",
+        base_url: str = None
+    ):
+        """
+        初始化 GLM API 客户端
+
+        Args:
+            api_key: 智谱 AI API 密钥（可选，默认从环境变量 ZHIPUAI_API_KEY 获取）
+            model: GLM 模型名称，可选值：glm-4, glm-4-flash, glm-4-plus, glm-4.7
+            base_url: API 基础 URL（可选，使用默认值即可）
+        """
+        # 获取 API 密钥（优先使用传入的密钥，其次使用环境变量）
+        self.api_key = api_key or os.getenv("ZHIPUAI_API_KEY")
+        self.model = model
+        # 使用 OpenAI 兼容的对话 API 端点（注意：不是 coding 端点）
+        self.base_url = base_url or "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+
+        # 检查 API 密钥是否可用
+        if not self.api_key:
+            print("警告: 未设置 GLM API 密钥，AI 增强功能将被禁用")
+            print("请设置环境变量 ZHIPUAI_API_KEY 或在初始化时传入 api_key")
+
+    def is_available(self) -> bool:
+        """
+        检查 API 是否可用
+
+        Returns:
+            bool: 如果 API 密钥已设置则返回 True，否则返回 False
+        """
+        return self.api_key is not None
+
+    def call(
+        self,
+        prompt: str,
+        system_prompt: str = None,
+        temperature: float = 0.7,
+        max_tokens: int = 1024,
+        raise_on_error: bool = False
+    ) -> Optional[str]:
+        """
+        调用 GLM API 生成文本
+
+        Args:
+            prompt: 用户提示文本
+            system_prompt: 系统提示文本（可选，用于设定模型角色）
+            temperature: 温度参数，控制输出的随机性（0-1），值越大越随机
+            max_tokens: 最大生成 token 数
+            raise_on_error: 是否在失败时抛出异常（默认 False，返回 None）
+
+        Returns:
+            生成的文本内容，如果调用失败则返回 None
+
+        Raises:
+            当 raise_on_error=True 时，失败会抛出异常
+
+        调用流程：
+        1. 构建请求头和请求体
+        2. 发送 POST 请求到智谱 AI API
+        3. 解析响应并返回结果
+        4. 如果失败则自动重试（最多 3 次）
+        """
+        if not self.is_available():
+            if raise_on_error:
+                raise ValueError("API Key 未配置，请设置环境变量 ZHIPUAI_API_KEY")
+            return None
+
+        # ========== 构建请求头 ==========
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+
+        # ========== 构建消息列表 ==========
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        # ========== 构建请求体 ==========
+        # GLM API 使用 OpenAI 兼容格式
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "top_p": 0.9
+        }
+
+        # ========== 发送请求（带重试机制）==========
+        last_error = None
+        for attempt in range(3):  # 最多重试 3 次
+            try:
+                if HAS_REQUESTS:
+                    # 使用 requests 库发送请求
+                    response = requests.post(
+                        self.base_url,
+                        headers=headers,
+                        json=payload,
+                        timeout=30
+                    )
+                    response.raise_for_status()  # 检查 HTTP 错误
+                    result = response.json()
+                else:
+                    # 使用 urllib 发送请求（requests 不可用时的备选方案）
+                    req = urllib.request.Request(
+                        self.base_url,
+                        data=json.dumps(payload).encode('utf-8'),
+                        headers=headers,
+                        method='POST'
+                    )
+                    with urllib.request.urlopen(req, timeout=30) as resp:
+                        result = json.loads(resp.read().decode('utf-8'))
+
+                # ========== 解析响应 ==========
+                # GLM API 使用 OpenAI 兼容的响应格式
+                if "choices" in result and len(result["choices"]) > 0:
+                    return result["choices"][0]["message"]["content"]
+                elif "error" in result:
+                    last_error = f"API 返回错误: {result['error']}"
+                    if raise_on_error:
+                        raise RuntimeError(last_error)
+                    return None
+                else:
+                    last_error = f"API 响应格式异常: {result}"
+                    if raise_on_error:
+                        raise RuntimeError(last_error)
+                    return None
+
+            except Exception as e:
+                error_msg = str(e)
+                last_error = error_msg
+                # 提供更详细的错误信息
+                if "401" in error_msg or "Unauthorized" in error_msg:
+                    last_error = f"API 认证失败，请检查 API Key 是否正确 (HTTP 401)"
+                elif "429" in error_msg or "rate" in error_msg.lower():
+                    last_error = f"API 请求频率超限 (HTTP 429)"
+                    time.sleep(2.0 * (attempt + 1))
+                elif "500" in error_msg or "502" in error_msg or "503" in error_msg:
+                    last_error = f"API 服务暂时不可用 ({error_msg})"
+                    time.sleep(2.0 * (attempt + 1))
+                elif "404" in error_msg:
+                    last_error = f"API 端点不存在 (HTTP 404)，请检查模型名称是否正确: {self.model}"
+                else:
+                    time.sleep(1.0 * (attempt + 1))  # 指数退避
+
+        # 所有重试都失败
+        if raise_on_error and last_error:
+            raise RuntimeError(f"GLM API 调用失败（重试3次后）: {last_error}")
+        return None
+
+
+# ==================== API 工厂函数 ====================
+
+def create_api_client(
+    api_type: str = "glm",
+    api_key: str = None,
+    model: str = None
+) -> Optional[Any]:
+    """
+    创建 API 客户端的工厂函数
+
+    根据指定的 API 类型创建对应的 API 客户端实例。
+
+    Args:
+        api_type: API 类型，可选值：qwen, glm
+        api_key: API 密钥（可选，默认从环境变量获取）
+        model: 模型名称（可选，使用各 API 的默认模型）
+
+    Returns:
+        API 客户端实例，如果创建失败则返回 None
+
+    使用示例：
+        >>> # 创建 GLM API 客户端
+        >>> api = create_api_client("glm")
+        >>> # 创建 Qwen API 客户端
+        >>> api = create_api_client("qwen", model="qwen-max")
+    """
+    api_type = api_type.lower()
+
+    if api_type == "glm":
+        return GLMAPI(
+            api_key=api_key,
+            model=model or "glm-4.7"
+        )
+    elif api_type == "qwen":
+        return QwenAPI(
+            api_key=api_key,
+            model=model or "qwen3-max-2026-01-23"
+        )
+    else:
+        print(f"不支持的 API 类型: {api_type}，支持的类型：qwen, glm")
         return None
 
 
@@ -290,15 +579,15 @@ def clean_response(response: str) -> str:
     return response
 
 
-def paraphrase_input(qwen_api: QwenAPI, text: str) -> Optional[str]:
+def paraphrase_input(api_client: Any, text: str) -> Optional[str]:
     """
     同义改写用户输入
 
-    使用 Qwen 模型对用户输入进行同义改写，生成语义相同但表达不同的新样本。
+    使用大语言模型对用户输入进行同义改写，生成语义相同但表达不同的新样本。
     这有助于增加训练数据的多样性，提高模型的泛化能力。
 
     Args:
-        qwen_api: Qwen API 实例
+        api_client: API 客户端实例（QwenAPI 或 GLMAPI）
         text: 原始用户输入文本
 
     Returns:
@@ -325,19 +614,19 @@ def paraphrase_input(qwen_api: QwenAPI, text: str) -> Optional[str]:
     system_prompt = "你是一个专业的心理咨询数据增强助手，擅长进行同义改写。"
 
     # 调用 API（使用较高的温度以增加多样性）
-    result = qwen_api.call(prompt, system_prompt=system_prompt, temperature=0.8)
+    result = api_client.call(prompt, system_prompt=system_prompt, temperature=0.8)
     return result.strip() if result else None
 
 
-def enhance_response(qwen_api: QwenAPI, response: str, context: str = "") -> Optional[str]:
+def enhance_response(api_client: Any, response: str, context: str = "") -> Optional[str]:
     """
     增强回复内容
 
-    使用 Qwen 模型优化心理咨询回复，使其更加专业、温暖、有共情力。
+    使用大语言模型优化心理咨询回复，使其更加专业、温暖、有共情力。
     这有助于提高训练数据的质量。
 
     Args:
-        qwen_api: Qwen API 实例
+        api_client: API 客户端实例（QwenAPI 或 GLMAPI）
         response: 原始回复文本
         context: 上下文信息（用户输入），可选
 
@@ -370,14 +659,14 @@ def enhance_response(qwen_api: QwenAPI, response: str, context: str = "") -> Opt
     system_prompt = "你是一个专业的心理咨询师，擅长提供温暖、专业的心理支持。"
 
     # 调用 API
-    result = qwen_api.call(prompt, system_prompt=system_prompt, temperature=0.7)
+    result = api_client.call(prompt, system_prompt=system_prompt, temperature=0.7)
 
     # 清理并返回结果
     return clean_response(result) if result else None
 
 
 def scenario_expansion(
-    qwen_api: QwenAPI,
+    api_client: Any,
     input_text: str,
     response: str,
     scenario: str
@@ -389,7 +678,7 @@ def scenario_expansion(
     以增加训练数据在不同场景下的覆盖度。
 
     Args:
-        qwen_api: Qwen API 实例
+        api_client: API 客户端实例（QwenAPI 或 GLMAPI）
         input_text: 原始用户输入
         response: 原始咨询师回复
         scenario: 目标场景名称
@@ -423,7 +712,7 @@ def scenario_expansion(
     system_prompt = "你是一个专业的心理咨询数据增强助手，擅长场景改编。"
 
     # 调用 API
-    result = qwen_api.call(prompt, system_prompt=system_prompt, temperature=0.8)
+    result = api_client.call(prompt, system_prompt=system_prompt, temperature=0.8)
 
     # 解析 JSON 响应
     if result:
@@ -453,9 +742,11 @@ class DataAugmenter:
     数据增强器类
 
     该类提供多种增强策略来扩充心理咨询对话训练数据。
+    支持使用 Qwen API 或 GLM API 作为后端。
 
     属性：
-        api (QwenAPI): Qwen API 实例
+        api: API 客户端实例（QwenAPI 或 GLMAPI）
+        api_type (str): 使用的 API 类型
         augment_ratio (float): 增强比例
         strategies (List[str]): 增强策略列表
         scenario_types (List[str]): 场景类型列表
@@ -468,14 +759,20 @@ class DataAugmenter:
         - clean: 清理回复格式
 
     使用示例：
-        >>> augmenter = DataAugmenter(api_key="your-api-key")
+        >>> # 使用 GLM API（推荐）
+        >>> augmenter = DataAugmenter(api_type="glm", api_key="your-api-key")
+        >>> augmented_data = augmenter.augment(original_data)
+        >>>
+        >>> # 使用 Qwen API
+        >>> augmenter = DataAugmenter(api_type="qwen", api_key="your-api-key")
         >>> augmented_data = augmenter.augment(original_data)
     """
 
     def __init__(
         self,
         api_key: str = None,
-        model: str = "qwen-plus",
+        api_type: str = "glm",
+        model: str = None,
         augment_ratio: float = 0.3,
         strategies: List[str] = None,
         scenario_types: List[str] = None
@@ -484,14 +781,33 @@ class DataAugmenter:
         初始化数据增强器
 
         Args:
-            api_key: DashScope API 密钥（可选，默认从环境变量获取）
-            model: Qwen 模型名称
+            api_key: API 密钥（可选，默认从环境变量获取）
+                     GLM API: 从 ZHIPUAI_API_KEY 环境变量获取
+                     Qwen API: 从 DASHSCOPE_API_KEY 环境变量获取
+            api_type: API 类型，可选值：glm（默认）, qwen
+            model: 模型名称（可选，使用各 API 的默认模型）
+                   GLM 默认: glm-4.7
+                   Qwen 默认: qwen-plus
             augment_ratio: 增强比例（0-1），表示对多少比例的数据进行增强
             strategies: 增强策略列表，可选值：paraphrase, enhance, scenario, clean
             scenario_types: 场景类型列表（用于场景扩展策略）
         """
-        # 初始化 API 客户端
-        self.api = QwenAPI(api_key=api_key, model=model)
+        # 设置 API 类型
+        self.api_type = api_type.lower()
+
+        # 根据类型初始化 API 客户端
+        if self.api_type == "glm":
+            self.api = GLMAPI(
+                api_key=api_key,
+                model=model or "glm-4.7"
+            )
+        elif self.api_type == "qwen":
+            self.api = QwenAPI(
+                api_key=api_key,
+                model=model or "qwen-plus"
+            )
+        else:
+            raise ValueError(f"不支持的 API 类型: {api_type}，支持的类型：glm, qwen")
 
         # 增强配置
         self.augment_ratio = augment_ratio
@@ -673,6 +989,8 @@ class DataAugmenter:
 
 def create_augmenter(
     api_key: str = None,
+    api_type: str = "glm",
+    model: str = None,
     augment_ratio: float = 0.3,
     strategies: List[str] = None
 ) -> DataAugmenter:
@@ -680,9 +998,16 @@ def create_augmenter(
     创建数据增强器的便捷函数
 
     这是一个工厂函数，用于快速创建 DataAugmenter 实例。
+    默认使用 GLM API (GLM-4.7 模型)。
 
     Args:
-        api_key: DashScope API 密钥
+        api_key: API 密钥（可选，默认从环境变量获取）
+                 GLM API: 从 ZHIPUAI_API_KEY 环境变量获取
+                 Qwen API: 从 DASHSCOPE_API_KEY 环境变量获取
+        api_type: API 类型，可选值：glm（默认，推荐）, qwen
+        model: 模型名称（可选）
+               GLM 可选: glm-4, glm-4-flash, glm-4-plus, glm-4.7
+               Qwen 可选: qwen-turbo, qwen-plus, qwen-max
         augment_ratio: 增强比例（0-1）
         strategies: 增强策略列表
 
@@ -690,11 +1015,22 @@ def create_augmenter(
         配置好的 DataAugmenter 实例
 
     使用示例：
-        >>> augmenter = create_augmenter(augment_ratio=0.5)
+        >>> # 使用默认 GLM API
+        >>> augmenter = create_augmenter()
+        >>> augmented = augmenter.augment(data)
+        >>>
+        >>> # 指定使用 Qwen API
+        >>> augmenter = create_augmenter(api_type="qwen")
+        >>> augmented = augmenter.augment(data)
+        >>>
+        >>> # 使用自定义模型
+        >>> augmenter = create_augmenter(api_type="glm", model="glm-4-flash")
         >>> augmented = augmenter.augment(data)
     """
     return DataAugmenter(
         api_key=api_key,
+        api_type=api_type,
+        model=model,
         augment_ratio=augment_ratio,
         strategies=strategies
     )
@@ -711,7 +1047,7 @@ if __name__ == "__main__":
 
     测试内容：
         1. 清理功能测试（不需要 API）
-        2. API 连接测试
+        2. API 连接测试（支持 Qwen 和 GLM）
         3. 同义改写测试
         4. 回复增强测试
     """
@@ -726,29 +1062,96 @@ if __name__ == "__main__":
     print(f"  原始: {test_response}")
     print(f"  清理后: {cleaned}")
 
-    # ========== 测试 API 连接 ==========
-    api = QwenAPI()
-    if api.is_available():
-        print("\n✓ API 可用，测试增强功能...")
+    # ========== 测试 GLM API 连接 ==========
+    print("\n" + "-" * 40)
+    print("测试 GLM API (智谱 AI)")
+    print("-" * 40)
+
+    glm_api = GLMAPI()
+    if glm_api.is_available():
+        print("✓ GLM API 可用")
 
         # 测试同义改写
         test_input = "最近工作压力很大，经常失眠"
         print(f"\n同义改写测试:")
         print(f"  原始: {test_input}")
-        paraphrased = paraphrase_input(api, test_input)
+        paraphrased = paraphrase_input(glm_api, test_input)
         print(f"  改写: {paraphrased}")
 
         # 测试回复增强
         test_response = "我理解你的感受，建议你尝试放松一下。"
         print(f"\n回复增强测试:")
         print(f"  原始: {test_response}")
-        enhanced = enhance_response(api, test_response, test_input)
+        enhanced = enhance_response(glm_api, test_response, test_input)
         print(f"  增强: {enhanced}")
 
     else:
-        print("\n✗ API 不可用（未设置 DASHSCOPE_API_KEY）")
-        print("  要启用 AI 增强功能，请设置环境变量:")
+        print("✗ GLM API 不可用（未设置 ZHIPUAI_API_KEY）")
+        print("  要启用 GLM 增强功能，请设置环境变量:")
+        print("  export ZHIPUAI_API_KEY='your-api-key'")
+        print("  获取 API Key: https://open.bigmodel.cn/")
+
+    # ========== 测试 Qwen API 连接 ==========
+    print("\n" + "-" * 40)
+    print("测试 Qwen API (阿里云 DashScope)")
+    print("-" * 40)
+
+    qwen_api = QwenAPI()
+    if qwen_api.is_available():
+        print("✓ Qwen API 可用")
+
+        # 测试同义改写
+        test_input = "最近工作压力很大，经常失眠"
+        print(f"\n同义改写测试:")
+        print(f"  原始: {test_input}")
+        paraphrased = paraphrase_input(qwen_api, test_input)
+        print(f"  改写: {paraphrased}")
+
+        # 测试回复增强
+        test_response = "我理解你的感受，建议你尝试放松一下。"
+        print(f"\n回复增强测试:")
+        print(f"  原始: {test_response}")
+        enhanced = enhance_response(qwen_api, test_response, test_input)
+        print(f"  增强: {enhanced}")
+
+    else:
+        print("✗ Qwen API 不可用（未设置 DASHSCOPE_API_KEY）")
+        print("  要启用 Qwen 增强功能，请设置环境变量:")
         print("  export DASHSCOPE_API_KEY='your-api-key'")
+
+    # ========== 测试工厂函数 ==========
+    print("\n" + "-" * 40)
+    print("测试工厂函数")
+    print("-" * 40)
+
+    # 测试 create_api_client
+    print("\n测试 create_api_client:")
+    client = create_api_client("glm")
+    if client and client.is_available():
+        print("  ✓ create_api_client('glm') 成功")
+    else:
+        print("  ✗ create_api_client('glm') - API Key 未设置")
+
+    client = create_api_client("qwen")
+    if client and client.is_available():
+        print("  ✓ create_api_client('qwen') 成功")
+    else:
+        print("  ✗ create_api_client('qwen') - API Key 未设置")
+
+    # 测试 create_augmenter
+    print("\n测试 create_augmenter:")
+    try:
+        augmenter = create_augmenter(api_type="glm")
+        print(f"  ✓ create_augmenter(api_type='glm') 成功")
+        print(f"    API 类型: {augmenter.api_type}")
+        print(f"    API 可用: {augmenter.api.is_available()}")
+    except Exception as e:
+        print(f"  ✗ create_augmenter 失败: {e}")
 
     print("\n" + "=" * 60)
     print("测试完成")
+    print("=" * 60)
+    print("\n使用建议:")
+    print("  1. 推荐使用 GLM API (GLM-4.7 模型)，中文理解能力更强")
+    print("  2. 设置环境变量: export ZHIPUAI_API_KEY='your-api-key'")
+    print("  3. 在代码中使用: augmenter = create_augmenter(api_type='glm')")
